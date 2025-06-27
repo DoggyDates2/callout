@@ -24,30 +24,65 @@ class DogReassignmentSystem:
                 csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
             
             response = requests.get(csv_url)
-            df = pd.read_csv(StringIO(response.text))
+            df = pd.read_csv(StringIO(response.text), dtype=str)  # Force all data as strings
             
             # Process the matrix - first row and first column are Dog IDs
             dog_ids = df.iloc[0, 1:].tolist()  # Skip first cell, get dog IDs from first row
             
-            for i, row_dog_id in enumerate(df.iloc[1:, 0]):  # Skip header row
-                if pd.isna(row_dog_id):
+            # Clean and convert dog IDs from header row
+            clean_dog_ids = []
+            for dog_id in dog_ids:
+                if pd.isna(dog_id) or str(dog_id).strip() == '':
                     continue
-                row_dog_id = str(int(float(row_dog_id)))
+                # Keep as string, just strip whitespace - DON'T convert to float
+                clean_id = str(dog_id).strip()
+                clean_dog_ids.append(clean_id)
+            
+            # Process each row
+            for i, row_dog_id in enumerate(df.iloc[1:, 0]):  # Skip header row
+                if pd.isna(row_dog_id) or str(row_dog_id).strip() == '':
+                    continue
+                
+                # Keep row dog ID as string - DON'T convert to float
+                row_dog_id = str(row_dog_id).strip()
                 self.distance_matrix[row_dog_id] = {}
                 
-                for j, col_dog_id in enumerate(dog_ids):
-                    if pd.isna(col_dog_id):
-                        continue
-                    col_dog_id = str(int(float(col_dog_id)))
-                    distance = df.iloc[i + 1, j + 1]  # +1 to account for header
-                    if pd.isna(distance):
-                        distance = 0
-                    self.distance_matrix[row_dog_id][col_dog_id] = float(distance)
+                # Process distances for this row
+                for j, col_dog_id in enumerate(clean_dog_ids):
+                    distance_val = df.iloc[i + 1, j + 1]  # +1 to account for header
+                    
+                    # Only convert DISTANCE values to float, not Dog IDs
+                    if pd.isna(distance_val) or str(distance_val).strip() == '':
+                        distance = 0.0
+                    else:
+                        distance_str = str(distance_val).strip()
+                        # Check if this looks like a number (distance) vs Dog ID
+                        try:
+                            # Try to convert to float - this should be a distance value
+                            distance = float(distance_str)
+                        except (ValueError, TypeError):
+                            # If conversion fails, it might be a Dog ID or invalid data
+                            # Set distance to 0 for invalid entries
+                            distance = 0.0
+                    
+                    self.distance_matrix[row_dog_id][col_dog_id] = distance
             
+            # Debug output
+            matrix_ids = list(self.distance_matrix.keys())[:10]  # Show first 10
             st.success(f"✅ Loaded distance matrix for {len(self.distance_matrix)} dogs")
+            st.info(f"🔍 Matrix Dog IDs (first 10): {matrix_ids}")
+            
+            # Show a sample of the distance data
+            if len(self.distance_matrix) > 0:
+                first_dog = list(self.distance_matrix.keys())[0]
+                sample_distances = list(self.distance_matrix[first_dog].items())[:5]
+                st.info(f"📏 Sample distances for {first_dog}: {sample_distances}")
+            
             return True
         except Exception as e:
             st.error(f"❌ Error loading distance matrix: {e}")
+            import traceback
+            st.error(f"🔍 Full error: {traceback.format_exc()}")
             return False
     
     def load_dog_assignments(self, csv_url):
@@ -59,16 +94,40 @@ class DogReassignmentSystem:
                 csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
             
             response = requests.get(csv_url)
-            df = pd.read_csv(StringIO(response.text))
+            df = pd.read_csv(StringIO(response.text), dtype=str)  # Force all data as strings
+            
+            # Debug: Show column names
+            st.info(f"🔍 Map sheet columns: {list(df.columns)}")
             
             # Process dog assignments
+            assignments_found = []
             for _, row in df.iterrows():
-                if pd.isna(row.get('Dog ID')) or pd.isna(row.get('Today')):
+                # Get Dog ID - try different possible column names
+                dog_id = None
+                for col_name in ['Dog ID', 'DogID', 'Dog_ID', 'dog_id']:
+                    if col_name in row and not pd.isna(row.get(col_name)):
+                        dog_id = str(row[col_name]).strip()
+                        break
+                
+                # Get Today assignment - try different possible column names  
+                assignment = None
+                for col_name in ['Today', 'Group', 'Assignment']:
+                    if col_name in row and not pd.isna(row.get(col_name)):
+                        assignment = str(row[col_name]).strip()
+                        break
+                
+                if not dog_id or not assignment or dog_id == '' or assignment == '':
                     continue
                 
-                dog_id = str(int(float(row['Dog ID'])))
-                assignment = str(row['Today']) if not pd.isna(row['Today']) else None
-                num_dogs = int(row['Number of dogs']) if not pd.isna(row['Number of dogs']) else 1
+                # Get number of dogs
+                num_dogs = 1
+                for col_name in ['Number of dogs', 'Num Dogs', 'Count']:
+                    if col_name in row and not pd.isna(row.get(col_name)):
+                        try:
+                            num_dogs = int(float(str(row[col_name]).strip()))
+                        except (ValueError, TypeError):
+                            num_dogs = 1
+                        break
                 
                 if assignment and ':' in assignment:
                     self.dogs_going_today[dog_id] = {
@@ -77,8 +136,16 @@ class DogReassignmentSystem:
                         'address': row.get('Address', ''),
                         'dog_name': row.get('Dog Name', '')
                     }
+                    assignments_found.append(f"{dog_id}:{assignment}")
             
+            # Debug output
+            assignment_ids = list(self.dogs_going_today.keys())[:10]  # Show first 10
             st.success(f"✅ Loaded assignments for {len(self.dogs_going_today)} dogs going today")
+            st.info(f"🔍 Assignment Dog IDs (first 10): {assignment_ids}")
+            
+            if len(assignments_found) > 0:
+                st.info(f"📋 Sample assignments: {assignments_found[:5]}")
+            
             return True
         except Exception as e:
             st.error(f"❌ Error loading dog assignments: {e}")
@@ -93,10 +160,16 @@ class DogReassignmentSystem:
                 csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
             
             response = requests.get(csv_url)
-            df = pd.read_csv(StringIO(response.text))
+            df = pd.read_csv(StringIO(response.text), dtype=str)  # Force all data as strings
+            
+            # Debug: Show column names
+            st.info(f"🔍 Driver sheet columns: {list(df.columns)}")
+            
+            drivers_loaded = []
+            callout_drivers = []
             
             for _, row in df.iterrows():
-                if pd.isna(row.get('Driver')):
+                if pd.isna(row.get('Driver')) or str(row.get('Driver')).strip() == '':
                     continue
                 
                 driver = str(row['Driver']).strip()
@@ -104,35 +177,57 @@ class DogReassignmentSystem:
                     continue
                 
                 # Check for callouts (X in group columns)
-                group1 = str(row.get('Group 1', '')).strip()
-                group2 = str(row.get('Group 2', '')).strip()
-                group3 = str(row.get('Group 3', '')).strip()
+                group1 = str(row.get('Group 1', '')).strip().upper()
+                group2 = str(row.get('Group 2', '')).strip().upper()
+                group3 = str(row.get('Group 3', '')).strip().upper()
                 
                 self.driver_callouts[driver] = {
-                    'group1': group1.upper() == 'X',
-                    'group2': group2.upper() == 'X',
-                    'group3': group3.upper() == 'X'
+                    'group1': group1 == 'X',
+                    'group2': group2 == 'X',
+                    'group3': group3 == 'X'
                 }
                 
                 # Parse capacities (default to 9 if not specified or X)
-                cap1 = 9 if group1.upper() == 'X' else (int(group1) if group1.isdigit() else 9)
-                cap2 = 9 if group2.upper() == 'X' else (int(group2) if group2.isdigit() else 9)
-                cap3 = 9 if group3.upper() == 'X' else (int(group3) if group3.isdigit() else 9)
+                try:
+                    cap1 = 9 if group1 == 'X' or group1 == '' else int(group1)
+                except (ValueError, TypeError):
+                    cap1 = 9
+                
+                try:
+                    cap2 = 9 if group2 == 'X' or group2 == '' else int(group2)
+                except (ValueError, TypeError):
+                    cap2 = 9
+                
+                try:
+                    cap3 = 9 if group3 == 'X' or group3 == '' else int(group3)
+                except (ValueError, TypeError):
+                    cap3 = 9
                 
                 self.driver_capacities[driver] = {
                     'group1': cap1,
                     'group2': cap2,
                     'group3': cap3
                 }
+                
+                drivers_loaded.append(driver)
+                
+                # Track callouts
+                if any([group1 == 'X', group2 == 'X', group3 == 'X']):
+                    callout_details = []
+                    if group1 == 'X': callout_details.append("Group 1")
+                    if group2 == 'X': callout_details.append("Group 2") 
+                    if group3 == 'X': callout_details.append("Group 3")
+                    callout_drivers.append(f"{driver} ({', '.join(callout_details)})")
             
-            # Find drivers calling out
-            callout_drivers = [d for d, c in self.driver_callouts.items() if any(c.values())]
+            # Debug output
             if callout_drivers:
                 st.warning(f"🚨 Drivers calling out: {', '.join(callout_drivers)}")
             else:
                 st.info("ℹ️ No drivers calling out today")
             
             st.success(f"✅ Loaded capacities for {len(self.driver_capacities)} drivers")
+            st.info(f"🔍 Drivers found: {drivers_loaded[:10]}")  # Show first 10
+            
             return True
         except Exception as e:
             st.error(f"❌ Error loading driver capacities: {e}")
@@ -467,6 +562,38 @@ def main():
             with st.spinner("Loading driver capacities..."):
                 if not system.load_driver_capacities(driver_counts_url):
                     return
+            
+            # Data validation section
+            st.subheader("🔍 Data Validation")
+            matrix_ids = set(system.distance_matrix.keys())
+            assignment_ids = set(system.dogs_going_today.keys())
+            
+            # Show overlap
+            matching_ids = matrix_ids.intersection(assignment_ids)
+            matrix_only = matrix_ids - assignment_ids
+            assignment_only = assignment_ids - matrix_ids
+            
+            col_a, col_b, col_c = st.columns(3)
+            
+            with col_a:
+                st.metric("Matrix Dogs", len(matrix_ids))
+                if len(matrix_only) > 0:
+                    st.write(f"Matrix only (first 5): {list(matrix_only)[:5]}")
+            
+            with col_b:
+                st.metric("Assignment Dogs", len(assignment_ids))
+                if len(assignment_only) > 0:
+                    st.write(f"Assignments only (first 5): {list(assignment_only)[:5]}")
+            
+            with col_c:
+                st.metric("Matching Dogs", len(matching_ids))
+                if len(matching_ids) > 0:
+                    st.write(f"Matching (first 5): {list(matching_ids)[:5]}")
+            
+            if len(matching_ids) == 0:
+                st.error("❌ NO MATCHING DOG IDs FOUND! Check that Dog IDs are in plain text format in both sheets.")
+                st.info("💡 Try converting Dog ID columns to 'Plain text' format in Google Sheets")
+                return
             
             # Perform reassignments
             st.subheader("🔄 Processing Reassignments")
