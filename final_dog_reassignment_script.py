@@ -3,13 +3,13 @@ import pandas as pd
 
 st.title("🐕 Debug: Testing Each Google Sheet URL")
 
-# Test URLs with CORRECT Matrix spreadsheet ID and gid
+# Test URLs with ALL CORRECT spreadsheet IDs and gids
 urls_to_test = {
     "Distance Matrix (CORRECT)": "https://docs.google.com/spreadsheets/d/1421xCS86YH6hx0RcuZCyXkyBK_xl-VDSlXyDNvw09Pg/export?format=csv&gid=2146002137",
     
-    "Map Data (gid=0)": "https://docs.google.com/spreadsheets/d/e/2PACX-1vT_9o2CJOgNpwtLPaqZkYBYVHtNJo5D-0qfeRqtdW-9yYV9cp5TMOvI5YTR8Xp3GcGhOU25mGBTHEdF/pub?gid=0&single=true&output=csv",
+    "Map Data (CORRECT)": "https://docs.google.com/spreadsheets/d/1mg8d5CLxSR54KhNUL8SpL5jzrGN-bghTsC9vxSK8lR0/export?format=csv&gid=267803750",
     
-    "Driver Counts (known working)": "https://docs.google.com/spreadsheets/d/e/2PACX-1vT_9o2CJOgNpwtLPaqZkYBYVHtNJo5D-0qfeRqtdW-9yYV9cp5TMOvI5YTR8Xp3GcGhOU25mGBTHEdF/pub?gid=1359695250&single=true&output=csv"
+    "Driver Counts (known working)": "https://docs.google.com/spreadsheets/d/1mg8d5CLxSR54KhNUL8SpL5jzrGN-bghTsC9vxSK8lR0/export?format=csv&gid=1359695250"
 }
 
 st.write("**Testing URLs based on the Matrix link you provided:**")
