@@ -6,16 +6,16 @@ import streamlit as st
 def load_google_sheet_data():
     """Load data from Google Sheets using public CSV links"""
     try:
-        # Distance Matrix
+        # Distance Matrix (separate spreadsheet)
         matrix_url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSh-t6fIfgsli9D79KZeXM_-V5fO3zam6T_Bcp94d-IoRucxWusl6vbtT-WSaqFimHw7ABd76YGcKGV/pub?gid=0&single=true&output=csv"
         distance_matrix = pd.read_csv(matrix_url, index_col=0)
         
-        # Map Sheet
+        # Map Sheet (gid=0 - first tab)
         map_url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vT_9o2CJOgNpwtLPaqZkYBYVHtNJo5D-0qfeRqtdW-9yYV9cp5TMOvI5YTR8Xp3GcGhOU25mGBTHEdF/pub?gid=0&single=true&output=csv"
         map_data = pd.read_csv(map_url)
         
-        # Driver Counts
-        driver_url = "https://docs.google.com/spreadsheets/d/1mg8d5CLxSR54KhNUL8SpL5jzrGN-bghTsC9vxSK8lR0/export?format=csv&gid=1359695250"
+        # Driver Counts (same spreadsheet as Map, but different tab - gid=1359695250)
+        driver_url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vT_9o2CJOgNpwtLPaqZkYBYVHtNJo5D-0qfeRqtdW-9yYV9cp5TMOvI5YTR8Xp3GcGhOU25mGBTHEdF/pub?gid=1359695250&single=true&output=csv"
         driver_data = pd.read_csv(driver_url)
         
         return distance_matrix, map_data, driver_data
