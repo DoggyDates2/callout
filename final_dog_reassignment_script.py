@@ -5,8 +5,8 @@ import streamlit as st
 def load_google_sheet_data():
     """Load data from Google Sheets using correct URLs"""
     try:
-        # Distance Matrix - CORRECT URL
-        matrix_url = "https://docs.google.com/spreadsheets/d/1421xCS86YH6hx0RcuZCyXkyBK_xl-VDSlXyDNvw09Pg/export?format=csv&gid=2146002137"
+        # Distance Matrix - UPDATED URL for plain text version
+        matrix_url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSh-t6fIfgsli9D79KZeXM_-V5fO3zam6T_Bcp94d-IoRucxWusl6vbtT-WSaqFimHw7ABd76YGcKGV/pub?gid=0&single=true&output=csv"
         distance_matrix = pd.read_csv(matrix_url, index_col=0)
         
         # Map Data - CORRECT URL  
@@ -91,7 +91,7 @@ def find_dog_in_matrix(dog_id, distance_matrix):
     return None
 
 def get_dogs_within_distance(dog_id, distance_matrix, max_distance, dogs_going_today):
-    """Find dogs within specified distance - ROBUST VERSION"""
+    """Find dogs within specified distance - HANDLES TEXT DISTANCES"""
     
     # Find the dog in matrix using flexible lookup
     matrix_dog_id = find_dog_in_matrix(dog_id, distance_matrix)
@@ -110,17 +110,24 @@ def get_dogs_within_distance(dog_id, distance_matrix, max_distance, dogs_going_t
             continue
         
         try:
-            distance = dog_distances[other_matrix_id]
+            distance_raw = dog_distances[other_matrix_id]
+            
+            # Convert distance to float (handles both number and text)
+            if pd.isna(distance_raw):
+                continue
+            
+            # Convert to float regardless of whether it's text or number
+            distance = float(str(distance_raw))
             
             # Check if valid distance
-            if pd.notna(distance) and distance > 0 and distance <= max_distance:
+            if distance > 0 and distance <= max_distance:
                 # Convert other dog ID to integer for map lookup
-                other_dog_id_clean = int(float(other_matrix_id))
+                other_dog_id_clean = int(float(str(other_matrix_id)))
                 
                 # Check if this dog is in the going today list
                 map_dog_ids = dogs_going_today['Dog ID'].astype(int)
                 if other_dog_id_clean in map_dog_ids.values:
-                    nearby_dogs.append((other_dog_id_clean, float(distance)))
+                    nearby_dogs.append((other_dog_id_clean, distance))
         
         except (ValueError, TypeError, KeyError):
             continue
