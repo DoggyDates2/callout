@@ -299,7 +299,7 @@ class DogReassignmentSystem:
         
         return dogs_to_reassign
     
-    def get_nearby_dogs(self, dog_id, max_distance=3.0):
+    def get_nearby_dogs(self, dog_id, max_distance=3.0):  # Back to original
         """Get dogs within max_distance miles of the given dog"""
         if dog_id not in self.distance_matrix:
             return []
@@ -344,23 +344,26 @@ class DogReassignmentSystem:
         dog_id = dog_to_reassign['dog_id']
         original_groups = dog_to_reassign['original_groups']
         num_dogs = dog_to_reassign['dog_info']['num_dogs']
+        dog_name = dog_to_reassign['dog_info']['dog_name']
         
         # Get nearby dogs
-        nearby_dogs = self.get_nearby_dogs(dog_id)
+        nearby_dogs = self.get_nearby_dogs(dog_id, max_distance=3.0)
         current_loads = self.get_current_driver_loads()
         
         candidates = []
+        debug_info = []
         
-        # Set distance thresholds based on groups
-        base_threshold = 0.5 if 1 in original_groups else 0.25 if 2 in original_groups else 0.5
-        threshold = base_threshold + (iteration * 0.5)  # Expand with iterations
+        # CORRECTED: Different thresholds for same vs adjacent groups
+        same_group_threshold = 0.5 + (iteration * 0.5)  # Same group: 0.5 miles base
+        adjacent_group_threshold = 0.25 + (iteration * 0.25)  # Adjacent group: 0.25 miles base (CLOSER required)
+        
+        debug_info.append(f"🔍 {dog_name} ({dog_id}) Groups {original_groups}:")
+        debug_info.append(f"   Same group threshold: {same_group_threshold:.2f} miles")
+        debug_info.append(f"   Adjacent group threshold: {adjacent_group_threshold:.2f} miles")
         
         for nearby in nearby_dogs:
             nearby_dog_id = nearby['dog_id']
             distance = nearby['distance']
-            
-            if distance > threshold:
-                continue
             
             if nearby_dog_id not in self.dogs_going_today:
                 continue
@@ -375,7 +378,7 @@ class DogReassignmentSystem:
             if nearby_driver == dog_to_reassign['original_driver']:
                 continue
             
-            # Skip if this driver is also calling out
+            # Skip if this driver is also calling out for the needed groups
             if nearby_driver in self.driver_callouts:
                 callout = self.driver_callouts[nearby_driver]
                 if any([
@@ -383,25 +386,45 @@ class DogReassignmentSystem:
                     2 in original_groups and callout['group2'],
                     3 in original_groups and callout['group3']
                 ]):
+                    debug_info.append(f"   ❌ {nearby_driver} also calling out")
                     continue
             
-            # Calculate compatibility score
+            # CORRECTED WEIGHTED MATCHING LOGIC
             score = 0
             compatible_groups = []
+            match_type = None
+            distance_threshold_used = 0
             
             for group in original_groups:
+                # Check for SAME GROUP matches first (full weight, 0.5 mile threshold)
                 if group in nearby_groups:
-                    # Same group - full weight
-                    score += 10
-                    compatible_groups.append(group)
-                elif abs(group - max(nearby_groups)) == 1 or abs(group - min(nearby_groups)) == 1:
-                    # Adjacent group - half weight
-                    score += 5
-                    # For multi-group dogs, we can assign to adjacent groups
-                    if len(original_groups) > 1:
+                    if distance <= same_group_threshold:
+                        score += 10  # Full weight for same group
                         compatible_groups.append(group)
+                        match_type = "same"
+                        distance_threshold_used = same_group_threshold
+                        debug_info.append(f"   ✅ {nearby_driver} SAME group {group} match at {distance:.2f}mi (threshold: {same_group_threshold:.2f})")
+                    else:
+                        debug_info.append(f"   ❌ {nearby_driver} same group {group} too far: {distance:.2f}mi > {same_group_threshold:.2f}mi")
+                
+                # Check for ADJACENT GROUP matches (half weight, 0.25 mile threshold - CLOSER required)
+                elif self.is_adjacent_group(group, nearby_groups):
+                    if distance <= adjacent_group_threshold:
+                        score += 5  # Half weight for adjacent group
+                        compatible_groups.append(group)
+                        match_type = "adjacent"
+                        distance_threshold_used = adjacent_group_threshold
+                        debug_info.append(f"   🟡 {nearby_driver} ADJACENT group match (need {group}, has {nearby_groups}) at {distance:.2f}mi (threshold: {adjacent_group_threshold:.2f})")
+                    else:
+                        debug_info.append(f"   ❌ {nearby_driver} adjacent group too far: {distance:.2f}mi > {adjacent_group_threshold:.2f}mi")
             
             if not compatible_groups:
+                debug_info.append(f"   ❌ {nearby_driver} no viable matches (has {nearby_groups}, need {original_groups})")
+                continue
+            
+            # Must match ALL original groups for this to work
+            if len(compatible_groups) != len(original_groups):
+                debug_info.append(f"   ❌ {nearby_driver} partial match only ({len(compatible_groups)}/{len(original_groups)} groups)")
                 continue
             
             # Check capacity constraints
@@ -409,31 +432,66 @@ class DogReassignmentSystem:
             current_load = current_loads.get(nearby_driver, {'group1': 0, 'group2': 0, 'group3': 0})
             
             capacity_ok = True
-            for group in compatible_groups:
+            capacity_details = []
+            for group in original_groups:  # Use original groups for capacity check
                 current = current_load.get(f'group{group}', 0)
                 capacity = driver_capacity.get(f'group{group}', 9)
                 if current + num_dogs > capacity:
                     capacity_ok = False
-                    break
+                    capacity_details.append(f"Group{group}: {current}+{num_dogs}>{capacity}")
+                else:
+                    capacity_details.append(f"Group{group}: {current}+{num_dogs}<={capacity}")
             
-            if capacity_ok:
-                # Prefer drivers with fewer dogs
-                load_penalty = sum(current_load.values())
-                final_score = score - (distance * 2) - (load_penalty * 0.1)
-                
-                candidates.append({
-                    'driver': nearby_driver,
-                    'groups': compatible_groups,
-                    'distance': distance,
-                    'score': final_score,
-                    'current_load': dict(current_load)
-                })
+            if not capacity_ok:
+                debug_info.append(f"   ❌ {nearby_driver} over capacity: {', '.join(capacity_details)}")
+                continue
+            
+            # Calculate final score
+            load_penalty = sum(current_load.values())
+            final_score = score - (distance * 2) - (load_penalty * 0.1)
+            
+            candidates.append({
+                'driver': nearby_driver,
+                'groups': original_groups,  # Keep original groups
+                'distance': distance,
+                'score': final_score,
+                'current_load': dict(current_load),
+                'match_type': match_type
+            })
+            
+            debug_info.append(f"   ✅ {nearby_driver} VIABLE: {match_type} match, score={final_score:.1f}, {distance:.2f}mi")
+        
+        # Store debug info for failed assignments
+        if not candidates:
+            debug_info.append(f"   ❌ NO VIABLE CANDIDATES for {dog_name}")
+            if not hasattr(self, 'debug_failures'):
+                self.debug_failures = []
+            self.debug_failures.extend(debug_info)
         
         # Sort by score (higher is better)
         candidates.sort(key=lambda x: x['score'], reverse=True)
+        
+        if candidates:
+            best = candidates[0]
+            debug_info.append(f"   🎯 SELECTED: {best['driver']} ({best['match_type']} match, score: {best['score']:.1f})")
+            
         return candidates[0] if candidates else None
     
-    def reassign_dogs(self, max_iterations=5):
+    def is_adjacent_group(self, group, nearby_groups):
+        """Check if any nearby group is adjacent to the target group"""
+        # Group 1 is adjacent to Group 2
+        # Group 2 is adjacent to Group 1 and Group 3  
+        # Group 3 is adjacent to Group 2
+        adjacent_map = {
+            1: [2],
+            2: [1, 3], 
+            3: [2]
+        }
+        
+        adjacent_to_group = adjacent_map.get(group, [])
+        return any(adj_group in nearby_groups for adj_group in adjacent_to_group)
+    
+    def reassign_dogs(self, max_iterations=5):  # Back to original
         """Main reassignment logic with domino effect handling"""
         dogs_to_reassign = self.get_dogs_to_reassign()
         
@@ -442,6 +500,9 @@ class DogReassignmentSystem:
             return []
         
         st.info(f"🔄 Found {len(dogs_to_reassign)} dogs that need reassignment")
+        
+        # Initialize debug tracking
+        self.debug_failures = []
         
         reassignments = []
         iteration = 0
@@ -455,6 +516,7 @@ class DogReassignmentSystem:
             
             successful_reassignments = 0
             
+            # Try to reassign each dog - continue even if some fail
             for dog_data in dogs_to_reassign[:]:  # Copy list to avoid modification during iteration
                 best_match = self.find_best_reassignment(dog_data, iteration)
                 
@@ -485,8 +547,12 @@ class DogReassignmentSystem:
                     
                     dogs_to_reassign.remove(dog_data)
                     successful_reassignments += 1
+                    
+                    st.write(f"  ✅ Moved {dog_data['dog_info']['dog_name']} → {new_assignment}")
             
+            # Stop if no progress made in this iteration
             if successful_reassignments == 0:
+                status_text.text(f"No more reassignments possible after iteration {iteration + 1}")
                 break
             
             iteration += 1
@@ -494,10 +560,38 @@ class DogReassignmentSystem:
         progress_bar.progress(1.0)
         status_text.text("Processing complete!")
         
+        # Report results - partial success is still success!
+        if reassignments:
+            st.success(f"✅ Successfully reassigned {len(reassignments)} dogs!")
+        
         if dogs_to_reassign:
-            st.warning(f"⚠️ {len(dogs_to_reassign)} dogs could not be reassigned:")
+            st.warning(f"⚠️ {len(dogs_to_reassign)} dogs could not be reassigned (but {len(reassignments)} were successfully moved):")
+            
+            # Show which dogs failed with their details
             for dog_data in dogs_to_reassign:
-                st.write(f"  - {dog_data['dog_info']['dog_name']} (ID: {dog_data['dog_id']})")
+                dog_name = dog_data['dog_info']['dog_name']
+                dog_id = dog_data['dog_id']
+                groups = '&'.join(map(str, dog_data['original_groups']))
+                original_driver = dog_data['original_driver']
+                st.write(f"  - {dog_name} (ID: {dog_id}) from {original_driver}:{groups}")
+            
+            # Show detailed debugging for failures
+            if hasattr(self, 'debug_failures') and self.debug_failures:
+                with st.expander("🔍 Debug Info for Failed Dogs (Click to expand)"):
+                    for debug_line in self.debug_failures:
+                        st.text(debug_line)
+            
+            # Provide helpful context
+            st.info(f"""
+            ℹ️ **Results Summary:**
+            - ✅ **{len(reassignments)} dogs successfully reassigned**
+            - ⚠️ **{len(dogs_to_reassign)} dogs need manual assignment**
+            
+            Common reasons dogs can't be auto-reassigned:
+            - No nearby drivers with matching groups and available capacity
+            - Dog is in a remote location with limited nearby options
+            - All nearby drivers are at capacity for that group
+            """)
         
         return reassignments
 
