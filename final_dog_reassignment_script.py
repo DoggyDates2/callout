@@ -72,18 +72,22 @@ def find_callout_drivers(driver_data):
     return callouts
 
 def get_dogs_within_distance(dog_id, distance_matrix, max_distance, dogs_going_today):
-    """Find dogs within specified distance of target dog with debugging"""
-    dog_id_str = str(dog_id)
+    """Find dogs within specified distance of target dog with debugging - FIXED"""
+    # Convert float to int then to string for matrix lookup
+    dog_id_int = int(float(dog_id))  # Handle 777.0 -> 777
+    dog_id_str = str(dog_id_int)     # Convert to string for matrix
+    
     nearby_dogs = []
     
-    st.write(f"  🔍 Looking for nearby dogs to Dog {dog_id}...")
+    st.write(f"  🔍 Looking for nearby dogs to Dog {dog_id} (converted to {dog_id_str})...")
     
     # Check if dog exists in matrix
     if dog_id_str not in distance_matrix.index:
-        st.write(f"  ❌ Dog {dog_id} not found in distance matrix index")
+        st.write(f"  ❌ Dog {dog_id_str} not found in distance matrix index")
+        st.write(f"  📋 Matrix index sample: {list(distance_matrix.index[:10])}")
         return []
     
-    st.write(f"  ✅ Dog {dog_id} found in distance matrix")
+    st.write(f"  ✅ Dog {dog_id_str} found in distance matrix")
     
     # Get the row for this dog
     dog_row = distance_matrix.loc[dog_id_str]
@@ -109,7 +113,10 @@ def get_dogs_within_distance(dog_id, distance_matrix, max_distance, dogs_going_t
                 try:
                     other_dog_id_int = int(other_dog_id_str)
                     
-                    if other_dog_id_int in dogs_going_today['Dog ID'].values:
+                    # Convert map data Dog IDs to int for comparison
+                    map_dog_ids = dogs_going_today['Dog ID'].astype(int)
+                    
+                    if other_dog_id_int in map_dog_ids.values:
                         in_map_count += 1
                         nearby_dogs.append((other_dog_id_int, distance))
                         
