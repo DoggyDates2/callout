@@ -72,57 +72,44 @@ def find_callout_drivers(driver_data):
     
     return callouts
 
-def load_driver_capacities(driver_data):
-    """Load driver capacity data into a usable format"""
-    capacities = {}
-    
-    if driver_data is None or driver_data.empty:
-        return capacities
-    
-    for _, row in driver_data.iterrows():
-        driver = row['Driver']
-        
-        driver_caps = {}
-        if pd.notna(row['Group 1']) and str(row['Group 1']).upper() != 'X':
-            try:
-                driver_caps['Group 1'] = int(row['Group 1'])
-            except:
-                pass
-        
-        if pd.notna(row['Group 2']) and str(row['Group 2']).upper() != 'X':
-            try:
-                driver_caps['Group 2'] = int(row['Group 2'])
-            except:
-                pass
-        
-        if pd.notna(row['Group 3']) and str(row['Group 3']).upper() != 'X':
-            try:
-                driver_caps['Group 3'] = int(row['Group 3'])
-            except:
-                pass
-        
-        if driver_caps:
-            capacities[driver] = driver_caps
-    
-    return capacities
-
 def get_dogs_within_distance(dog_id, distance_matrix, max_distance, dogs_going_today):
-    """Find dogs within specified distance of target dog"""
-    if str(dog_id) not in distance_matrix.columns:
-        return []
+    """Find dogs within specified distance of target dog - FIXED VERSION"""
+    # Convert dog_id to string for matrix lookup
+    dog_id_str = str(dog_id)
+    
+    # Check if dog exists in matrix (try both string and int formats)
+    if dog_id_str not in distance_matrix.index:
+        if dog_id not in distance_matrix.index:
+            return []
     
     nearby_dogs = []
-    for other_dog_id in distance_matrix.columns:
-        if other_dog_id == str(dog_id):
+    
+    # Iterate through all columns in the distance matrix
+    for other_dog_id_str in distance_matrix.columns:
+        if other_dog_id_str == dog_id_str:
             continue
         
         try:
-            distance = distance_matrix.loc[str(dog_id), str(other_dog_id)]
-            if 0 < distance <= max_distance:
-                # Check if this dog is going today
-                if int(other_dog_id) in dogs_going_today['Dog ID'].values:
-                    nearby_dogs.append((int(other_dog_id), distance))
-        except:
+            # Get distance using proper indexing
+            distance = distance_matrix.loc[dog_id_str, other_dog_id_str]
+            
+            # Convert to float if it's not already
+            if pd.notna(distance):
+                distance = float(distance)
+                
+                # Check if distance is valid and within threshold
+                if 0 < distance <= max_distance:
+                    # Convert other_dog_id back to int for checking against map data
+                    try:
+                        other_dog_id_int = int(other_dog_id_str)
+                        
+                        # Check if this dog is going today
+                        if other_dog_id_int in dogs_going_today['Dog ID'].values:
+                            nearby_dogs.append((other_dog_id_int, distance))
+                    except ValueError:
+                        # Skip if can't convert to int
+                        continue
+        except (KeyError, ValueError, TypeError):
             continue
     
     return sorted(nearby_dogs, key=lambda x: x[1])  # Sort by distance
@@ -140,119 +127,74 @@ def calculate_group_compatibility_weight(target_groups, candidate_groups):
     
     return weight
 
-def count_current_dogs_in_groups(driver, groups, current_assignments):
-    """Count how many dogs a driver currently has in specified groups"""
-    count = 0
-    for _, row in current_assignments.iterrows():
-        assigned_driver, assigned_groups = parse_assignment(row['Today'])
-        if assigned_driver == driver:
-            # Count overlap between assigned groups and target groups
-            overlap = set(assigned_groups) & set(groups)
-            if overlap:
-                # Multiply by number of dogs at this location
-                num_dogs = row['Number of dogs'] if pd.notna(row['Number of dogs']) else 1
-                count += num_dogs
-    
-    return count
-
-def find_best_reassignment(dog_to_move, current_assignments, distance_matrix, driver_capacities):
-    """Find the best driver to reassign a dog to"""
+def find_best_reassignment_simplified(dog_to_move, current_assignments, distance_matrix):
+    """Simplified reassignment logic with better debugging"""
     dog_id = dog_to_move['Dog ID']
     original_driver, original_groups = parse_assignment(dog_to_move['Today'])
-    num_dogs = dog_to_move['Number of dogs'] if pd.notna(dog_to_move['Number of dogs']) else 1
     
-    dogs_going_today = current_assignments
+    if not original_groups:
+        return None
     
-    # Start with base distance thresholds
-    group_1_threshold = 0.5
-    group_2_threshold = 0.25
-    max_iterations = 5
+    # More generous distance thresholds
+    max_distance = 2.0  # Increased from 0.5/0.25
     
-    for iteration in range(max_iterations):
-        # Adjust thresholds based on iteration
-        current_g1_threshold = group_1_threshold + (iteration * 0.5)
-        current_g2_threshold = group_2_threshold + (iteration * 0.25)
+    # Get nearby dogs
+    nearby_dogs = get_dogs_within_distance(dog_id, distance_matrix, max_distance, current_assignments)
+    
+    if not nearby_dogs:
+        return None
+    
+    candidates = []
+    
+    for nearby_dog_id, distance in nearby_dogs:
+        # Find the nearby dog's data
+        nearby_dog = current_assignments[current_assignments['Dog ID'] == nearby_dog_id]
+        if nearby_dog.empty:
+            continue
         
-        # Get nearby dogs
-        max_threshold = max(current_g1_threshold, current_g2_threshold)
-        nearby_dogs = get_dogs_within_distance(dog_id, distance_matrix, max_threshold, dogs_going_today)
+        nearby_dog = nearby_dog.iloc[0]
+        candidate_driver, candidate_groups = parse_assignment(nearby_dog['Today'])
         
-        candidates = []
+        # Must have a different driver
+        if not candidate_driver or candidate_driver == original_driver:
+            continue
         
-        for nearby_dog_id, distance in nearby_dogs:
-            nearby_dog = dogs_going_today[dogs_going_today['Dog ID'] == nearby_dog_id]
-            if nearby_dog.empty:
-                continue
-            
-            nearby_dog = nearby_dog.iloc[0]
-            candidate_driver, candidate_groups = parse_assignment(nearby_dog['Today'])
-            
-            if not candidate_driver or candidate_driver == original_driver:
-                continue
-            
-            # Check distance threshold based on groups
-            threshold_met = False
-            for group in original_groups:
-                if group == 1 and distance <= current_g1_threshold:
-                    threshold_met = True
-                elif group == 2 and distance <= current_g2_threshold:
-                    threshold_met = True
-                elif group == 3 and distance <= current_g1_threshold:  # Group 3 uses same threshold as Group 1
-                    threshold_met = True
-            
-            if not threshold_met:
-                continue
-            
-            # Calculate compatibility weight
-            compatibility = calculate_group_compatibility_weight(original_groups, candidate_groups)
-            if compatibility == 0:
-                continue
-            
-            # Count current dogs for this driver in relevant groups
-            current_dog_count = count_current_dogs_in_groups(candidate_driver, original_groups, current_assignments)
-            
-            # Check capacity constraints
-            capacity_ok = True
-            if driver_capacities and candidate_driver in driver_capacities:
-                for group in original_groups:
-                    max_capacity = driver_capacities[candidate_driver].get(f'Group {group}', float('inf'))
-                    if current_dog_count + num_dogs > max_capacity:
-                        capacity_ok = False
-                        break
-            
-            if capacity_ok:
-                candidates.append({
-                    'driver': candidate_driver,
-                    'groups': candidate_groups,
-                    'distance': distance,
-                    'compatibility': compatibility,
-                    'current_count': current_dog_count,
-                    'nearby_dog_id': nearby_dog_id
-                })
+        # Calculate compatibility
+        compatibility = calculate_group_compatibility_weight(original_groups, candidate_groups)
+        if compatibility == 0:
+            continue
         
-        if candidates:
-            # Sort by: compatibility (desc), current count (asc), distance (asc)
-            candidates.sort(key=lambda x: (-x['compatibility'], x['current_count'], x['distance']))
-            return candidates[0]
+        candidates.append({
+            'driver': candidate_driver,
+            'groups': candidate_groups,
+            'distance': distance,
+            'compatibility': compatibility,
+            'nearby_dog_id': nearby_dog_id
+        })
+    
+    if candidates:
+        # Sort by: compatibility (desc), distance (asc)
+        candidates.sort(key=lambda x: (-x['compatibility'], x['distance']))
+        return candidates[0]
     
     return None
 
 def format_groups(groups):
-    """Format groups list back to string format (e.g., [1,2] -> '1&2')"""
+    """Format groups list back to string format"""
     if len(groups) == 1:
         return str(groups[0])
     else:
         return '&'.join(map(str, sorted(groups)))
 
 def reassign_dogs():
-    """Main reassignment function"""
-    st.title("🐕 Dog Reassignment System")
+    """Main reassignment function with simplified logic"""
+    st.title("🐕 Dog Reassignment System - Fixed Version")
     
     # Load data
     distance_matrix, map_data, driver_data = load_google_sheet_data()
     
     if distance_matrix is None or map_data is None or driver_data is None:
-        st.error("Could not load data from Google Sheets. Please check the URLs and sheet permissions.")
+        st.error("Could not load data from Google Sheets.")
         return
     
     # Display data status
@@ -264,142 +206,114 @@ def reassign_dogs():
     with col3:
         st.metric("Drivers", len(driver_data))
     
-    # Check for automatic callouts first
+    # Check for automatic callouts
     auto_callouts = find_callout_drivers(driver_data)
     
     if auto_callouts:
-        st.subheader("🚨 Automatic Callouts Detected from Driver Sheet:")
+        st.subheader("🚨 Automatic Callouts Detected:")
         for driver, groups in auto_callouts.items():
             st.error(f"**{driver}** called out from Groups: {', '.join(map(str, groups))}")
     
-    # Manual callout simulation for testing
-    st.subheader("Additional Manual Callout Simulation (for testing)")
-    available_drivers = sorted(map_data['Today'].str.split(':').str[0].dropna().unique())
-    callout_driver = st.selectbox("Select additional driver who called out:", ["None"] + available_drivers)
-    callout_groups = st.multiselect("Select groups they called out from:", [1, 2, 3])
+    # Manual testing
+    st.subheader("Manual Testing")
+    available_drivers = sorted([d for d in map_data['Today'].str.split(':').str[0].dropna().unique() if d])
+    callout_driver = st.selectbox("Select driver who called out:", ["None"] + available_drivers)
+    callout_groups = st.multiselect("Select groups:", [1, 2, 3])
     
     if st.button("🔄 Process Reassignments", type="primary"):
         # Combine automatic and manual callouts
         all_callouts = auto_callouts.copy()
         
         if callout_driver != "None" and callout_groups:
-            if callout_driver in all_callouts:
-                # Merge with existing callout
-                all_callouts[callout_driver] = list(set(all_callouts[callout_driver] + callout_groups))
-            else:
-                all_callouts[callout_driver] = callout_groups
+            all_callouts[callout_driver] = callout_groups
         
         if not all_callouts:
-            st.warning("No callouts detected or selected")
+            st.warning("No callouts selected")
             return
         
-        st.subheader("Processing Callouts:")
-        for driver, groups in all_callouts.items():
-            st.write(f"• **{driver}**: Groups {groups}")
-        
-        # Load driver capacities
-        driver_capacities = load_driver_capacities(driver_data)
-        
-        # Get current assignments
+        # Process reassignments
         current_assignments = map_data.copy()
         current_assignments['New Assignment'] = ''
-        
         all_reassignments = []
         
-        # Process each driver's callout
-        for callout_driver, callout_groups in all_callouts.items():
-            # Find dogs assigned to the calling-out driver
-            callout_pattern = f'{callout_driver}:'
+        for callout_driver_name, callout_groups_list in all_callouts.items():
+            # Find affected dogs
             affected_dogs = current_assignments[
-                current_assignments['Today'].str.contains(callout_pattern, na=False)
+                current_assignments['Today'].str.contains(f'{callout_driver_name}:', na=False)
             ]
             
-            st.subheader(f"Dogs affected by {callout_driver}'s callout:")
+            st.subheader(f"Dogs affected by {callout_driver_name}'s callout:")
             if not affected_dogs.empty:
                 st.dataframe(affected_dogs[['Dog Name', 'Dog ID', 'Today', 'Number of dogs']])
-            else:
-                st.info(f"No dogs currently assigned to {callout_driver}")
-                continue
-            
-            # Process reassignments for this driver
-            reassignments = []
-            
-            with st.spinner(f"Finding reassignments for {callout_driver}'s dogs..."):
-                for _, dog in affected_dogs.iterrows():
-                    original_driver, original_groups = parse_assignment(dog['Today'])
-                    
-                    # Check if this dog is affected by the callout
-                    affected_groups = set(original_groups) & set(callout_groups)
-                    if not affected_groups:
-                        continue
-                    
-                    # Find best reassignment
-                    reassignment = find_best_reassignment(dog, current_assignments, distance_matrix, driver_capacities)
-                    
-                    if reassignment:
-                        new_assignment = f"{reassignment['driver']}:{format_groups(list(affected_groups))}"
-                        current_assignments.loc[current_assignments['Dog ID'] == dog['Dog ID'], 'New Assignment'] = new_assignment
+                
+                # Process each dog
+                with st.spinner(f"Finding reassignments..."):
+                    for _, dog in affected_dogs.iterrows():
+                        original_driver, original_groups = parse_assignment(dog['Today'])
                         
-                        reassignments.append({
-                            'Dog Name': dog['Dog Name'],
-                            'Dog ID': dog['Dog ID'],
-                            'Original Assignment': dog['Today'],
-                            'New Assignment': new_assignment,
-                            'Distance to Nearby Dog': f"{reassignment['distance']:.2f} miles",
-                            'Reason': f"Moved to {reassignment['driver']} (nearest dog: {reassignment['nearby_dog_id']})"
-                        })
-                    else:
-                        reassignments.append({
-                            'Dog Name': dog['Dog Name'],
-                            'Dog ID': dog['Dog ID'],
-                            'Original Assignment': dog['Today'],
-                            'New Assignment': 'NO SOLUTION FOUND',
-                            'Distance to Nearby Dog': 'N/A',
-                            'Reason': 'No suitable driver found within distance thresholds'
-                        })
-            
-            all_reassignments.extend(reassignments)
+                        # Check if affected by callout
+                        affected_groups = set(original_groups) & set(callout_groups_list)
+                        if not affected_groups:
+                            continue
+                        
+                        # Find reassignment
+                        reassignment = find_best_reassignment_simplified(dog, current_assignments, distance_matrix)
+                        
+                        if reassignment:
+                            new_assignment = f"{reassignment['driver']}:{format_groups(list(affected_groups))}"
+                            current_assignments.loc[current_assignments['Dog ID'] == dog['Dog ID'], 'New Assignment'] = new_assignment
+                            
+                            all_reassignments.append({
+                                'Dog Name': dog['Dog Name'],
+                                'Dog ID': dog['Dog ID'],
+                                'Original Assignment': dog['Today'],
+                                'New Assignment': new_assignment,
+                                'Distance': f"{reassignment['distance']:.3f} miles",
+                                'Compatibility': reassignment['compatibility'],
+                                'Via Dog': reassignment['nearby_dog_id']
+                            })
+                        else:
+                            all_reassignments.append({
+                                'Dog Name': dog['Dog Name'],
+                                'Dog ID': dog['Dog ID'],
+                                'Original Assignment': dog['Today'],
+                                'New Assignment': 'NO SOLUTION',
+                                'Distance': 'N/A',
+                                'Compatibility': 0,
+                                'Via Dog': 'N/A'
+                            })
+            else:
+                st.info(f"No dogs assigned to {callout_driver_name}")
         
         # Display results
-        st.subheader("📋 Final Reassignment Results:")
+        st.subheader("📋 Reassignment Results:")
         if all_reassignments:
             results_df = pd.DataFrame(all_reassignments)
             st.dataframe(results_df, use_container_width=True)
             
-            # Show updated assignments
-            st.subheader("📊 Updated Map Data (Column K - New Assignment):")
-            display_data = current_assignments[current_assignments['New Assignment'] != ''][
-                ['Dog Name', 'Dog ID', 'Today', 'New Assignment']
-            ]
-            if not display_data.empty:
-                st.dataframe(display_data, use_container_width=True)
-            else:
-                st.info("No new assignments were made.")
-            
-            # Option to download results
-            csv = current_assignments.to_csv(index=False)
-            st.download_button(
-                label="📥 Download Updated Assignments as CSV",
-                data=csv,
-                file_name="updated_dog_assignments.csv",
-                mime="text/csv"
-            )
-            
-            # Summary stats
-            successful_reassignments = len([r for r in all_reassignments if r['New Assignment'] != 'NO SOLUTION FOUND'])
-            failed_reassignments = len(all_reassignments) - successful_reassignments
+            # Summary
+            successful = len([r for r in all_reassignments if r['New Assignment'] != 'NO SOLUTION'])
+            failed = len(all_reassignments) - successful
             
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.metric("Total Dogs Affected", len(all_reassignments))
+                st.metric("Total Dogs", len(all_reassignments))
             with col2:
-                st.metric("Successfully Reassigned", successful_reassignments)
+                st.metric("Successfully Reassigned", successful, delta=f"+{successful}")
             with col3:
-                st.metric("No Solution Found", failed_reassignments)
-                
+                st.metric("No Solution Found", failed, delta=f"-{failed}" if failed > 0 else "0")
+            
+            # Download option
+            if successful > 0:
+                csv = current_assignments.to_csv(index=False)
+                st.download_button(
+                    label="📥 Download Updated Assignments",
+                    data=csv,
+                    file_name="updated_dog_assignments.csv",
+                    mime="text/csv"
+                )
         else:
-            st.info("No dogs needed reassignment based on the detected callouts.")
+            st.info("No reassignments needed.")
 
-# Streamlit app entry point
 if __name__ == "__main__":
     reassign_dogs()
