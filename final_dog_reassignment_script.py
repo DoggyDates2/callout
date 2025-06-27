@@ -5,8 +5,8 @@ import streamlit as st
 def load_google_sheet_data():
     """Load data from Google Sheets using correct URLs"""
     try:
-        # Distance Matrix - UPDATED URL for plain text version
-        matrix_url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSh-t6fIfgsli9D79KZeXM_-V5fO3zam6T_Bcp94d-IoRucxWusl6vbtT-WSaqFimHw7ABd76YGcKGV/pub?gid=0&single=true&output=csv"
+        # Distance Matrix - CORRECT URL with right spreadsheet ID and gid
+        matrix_url = "https://docs.google.com/spreadsheets/d/1421xCS86YH6hx0RcuZCyXkyBK_xl-VDSlXyDNvw09Pg/export?format=csv&gid=2146002137"
         distance_matrix = pd.read_csv(matrix_url, index_col=0)
         
         # Map Data - CORRECT URL  
