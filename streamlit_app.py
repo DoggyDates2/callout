@@ -1,4 +1,7 @@
 
+# ✅ Streamlit app with safe capacity checks and full domino eviction logic
+# This version ensures KeyErrors are avoided with defensive lookups
+
 import streamlit as st
 import pandas as pd
 import re
@@ -8,6 +11,7 @@ st.set_page_config(page_title="Dog Reassignment System", layout="wide")
 st.title("🐶 Dog Reassignment System")
 
 MAX_DOMINO_DEPTH = 5
+EVICTION_DISTANCE_LIMIT = 0.75
 
 @st.cache_data
 def load_csv(url):
@@ -122,50 +126,83 @@ if url_map and url_matrix:
         assignments = []
         seen = set()
 
-        for dog in dogs_to_reassign:
-            dog_id = dog['dog_id']
-            dog_groups = dog['original_groups']
-            num_dogs = dog['dog_info']['num_dogs']
-            dog_name = dog['dog_info']['dog_name']
-            distances = distance_matrix.get(dog_id, {})
-            for radius in generate_radius_steps():
-                for other_id, dist in distances.items():
-                    if dist == 0 or dist > radius or other_id not in dogs_going_today:
-                        continue
-                    candidate_driver = dogs_going_today[other_id]['driver']
-                    if candidate_driver == selected_driver:
-                        continue
-                    other_groups = dogs_going_today[other_id]['groups']
-                    if not set(dog_groups).intersection(other_groups) and not any(is_adjacent(g, og) for g in dog_groups for og in other_groups):
-                        continue
-                    fits = True
-                    for g in dog_groups:
-                        k = f"group{g}"
-                        if driver_loads[candidate_driver][k] + num_dogs > driver_capacities[candidate_driver][k]:
-                            fits = False
-                            break
-                    if fits:
+        def can_evicted_dog_be_reassigned(evicted_id, group):
+            options = distance_matrix.get(evicted_id, {})
+            for oid, dist in sorted(options.items(), key=lambda x: x[1]):
+                if dist == 0 or dist > EVICTION_DISTANCE_LIMIT or oid not in dogs_going_today:
+                    continue
+                d = dogs_going_today[oid]
+                if group in d["groups"]:
+                    return True
+            return False
+
+        queue = dogs_to_reassign
+        depth = 0
+        while queue and depth < MAX_DOMINO_DEPTH:
+            next_queue = []
+            for dog in queue:
+                dog_id = dog['dog_id']
+                dog_groups = dog['original_groups']
+                num_dogs = dog['dog_info']['num_dogs']
+                dog_name = dog['dog_info']['dog_name']
+                distances = distance_matrix.get(dog_id, {})
+                for radius in generate_radius_steps():
+                    for other_id, dist in distances.items():
+                        if dist == 0 or dist > radius or other_id not in dogs_going_today:
+                            continue
+                        candidate_driver = dogs_going_today[other_id]['driver']
+                        if candidate_driver == selected_driver or candidate_driver not in driver_capacities:
+                            continue
+                        other_groups = dogs_going_today[other_id]['groups']
+                        if not set(dog_groups).intersection(other_groups) and not any(is_adjacent(g, og) for g in dog_groups for og in other_groups):
+                            continue
+                        fits = True
+                        evicted_ids = []
                         for g in dog_groups:
-                            driver_loads[candidate_driver][f"group{g}"] += num_dogs
-                        dogs_going_today[dog_id] = {
-                            'assignment': f"{candidate_driver}:{'&'.join(map(str, dog_groups))}",
-                            'num_dogs': num_dogs,
-                            'driver': candidate_driver,
-                            'groups': dog_groups,
-                            'address': dog['dog_info']['address'],
-                            'dog_name': dog_name
-                        }
-                        assignments.append({
-                            'Dog ID': dog_id,
-                            'Dog Name': dog_name,
-                            'To Driver': candidate_driver,
-                            'Groups': "&".join(map(str, dog_groups)),
-                            'Distance': round(dist, 3)
-                        })
-                        seen.add(dog_id)
+                            k = f"group{g}"
+                            if driver_loads[candidate_driver][k] + num_dogs > driver_capacities[candidate_driver][k]:
+                                current_assignments = [
+                                    d_id for d_id, d in dogs_going_today.items()
+                                    if d["driver"] == candidate_driver and g in d["groups"]
+                                    and can_evicted_dog_be_reassigned(d_id, g)
+                                ]
+                                if not current_assignments:
+                                    fits = False
+                                    break
+                                evicted_id = current_assignments[0]
+                                evicted_ids.append(evicted_id)
+                                driver_loads[candidate_driver][k] -= dogs_going_today[evicted_id]["num_dogs"]
+                                next_queue.append({
+                                    'dog_id': evicted_id,
+                                    'original_driver': candidate_driver,
+                                    'original_groups': dogs_going_today[evicted_id]["groups"],
+                                    'affected_groups': [g],
+                                    'dog_info': dogs_going_today[evicted_id]
+                                })
+                        if fits:
+                            for g in dog_groups:
+                                driver_loads[candidate_driver][f"group{g}"] += num_dogs
+                            dogs_going_today[dog_id] = {
+                                'assignment': f"{candidate_driver}:{'&'.join(map(str, dog_groups))}",
+                                'num_dogs': num_dogs,
+                                'driver': candidate_driver,
+                                'groups': dog_groups,
+                                'address': dog['dog_info']['address'],
+                                'dog_name': dog_name
+                            }
+                            assignments.append({
+                                'Dog ID': dog_id,
+                                'Dog Name': dog_name,
+                                'To Driver': candidate_driver,
+                                'Groups': "&".join(map(str, dog_groups)),
+                                'Distance': round(dist, 3)
+                            })
+                            seen.add(dog_id)
+                            break
+                    if dog_id in seen:
                         break
-                if dog_id in seen:
-                    break
+            queue = next_queue
+            depth += 1
 
         final_rows = []
         for a in assignments:
