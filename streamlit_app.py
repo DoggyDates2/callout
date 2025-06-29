@@ -210,6 +210,28 @@ if url_map and url_matrix:
             queue = new_queue
             depth += 1
 
-        st.success(f"✅ Reassigned {len(assignments)} dogs from {selected_driver}")
-        st.dataframe(pd.DataFrame(assignments))
+# ✅ Collect both reassigned and evicted dogs into one final result
+final_rows = []
+seen_ids = set()
+
+for a in assignments:
+    final_rows.append({
+        "Dog ID": a['Dog ID'],
+        "New Assignment": f"{a['To Driver']}:{a['Groups']}"
+    })
+    seen_ids.add(a['Dog ID'])
+
+# Optional: include evicted dogs that were reassigned
+for dog_id, info in dogs_going_today.items():
+    if dog_id not in seen_ids and info['driver'] != selected_driver:
+        final_rows.append({
+            "Dog ID": dog_id,
+            "New Assignment": f"{info['driver']}:{'&'.join(map(str, info['groups']))}"
+        })
+
+# ✅ Display the final 2-column output
+result_df = pd.DataFrame(final_rows)
+result_df = result_df[["Dog ID", "New Assignment"]]  # enforce column order
+st.success(f"✅ Final Reassignments")
+st.dataframe(result_df)
 
