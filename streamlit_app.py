@@ -3,13 +3,15 @@ import pandas as pd
 import re
 from collections import defaultdict
 
-st.set_page_config(page_title="Dog Reassignment", layout="wide")
+st.set_page_config(page_title="Dog Reassignment System", layout="wide")
 st.title("🐶 Dog Reassignment System")
 
 MAX_DOMINO_DEPTH = 5
-EVICTION_DISTANCE_LIMIT = 0.5
+EVICTION_DISTANCE_LIMIT = 0.75
+FRINGE_DISTANCE_LIMIT = 0.5
+REASSIGNMENT_THRESHOLD = 1.5
+PLACEMENT_GOAL_DISTANCE = 0.5
 
-# Hardcoded Sheet URLs
 url_map = "https://docs.google.com/spreadsheets/d/1mg8d5CLxSR54KhNUL8SpL5jzrGN-bghTsC9vxSK8lR0/export?format=csv&gid=267803750"
 url_matrix = "https://docs.google.com/spreadsheets/d/1421xCS86YH6hx0RcuZCyXkyBK_xl-VDSlXyDNvw09Pg/export?format=csv&gid=398422902"
 
@@ -34,16 +36,16 @@ def parse_cap(val):
 
 def get_groups(group_str):
     group_str = group_str.replace("LM", "")
-    return sorted(set(int(g) for g in re.findall(r'\\d', group_str)))
-# Load sheets
+    return sorted(set(int(g) for g in re.findall(r'\d', group_str)))
+
+# Load and clean
 map_df = load_csv(url_map)
 matrix_df = load_csv(url_matrix)
 
 map_df["Dog ID"] = map_df["Dog ID"].astype(str).str.strip()
 map_df["Name"] = map_df["Name"].astype(str).str.strip()
-map_df["Group"] = map_df["Group"].astype(str).str.replace("LM", "", case=False).str.strip()
+map_df["Group"] = map_df["Group"].astype(str).str.strip()
 
-# Build dogs_going_today
 dogs_going_today = {}
 for _, row in map_df.iterrows():
     dog_id = row.get("Dog ID", "").strip()
@@ -92,7 +94,8 @@ for i, row in matrix_df.iterrows():
         except:
             val = 0.0
         distance_matrix[row_id][str(col_id).strip()] = val
-# UI - select driver & groups to call out
+
+# UI
 st.subheader("📋 Driver Callout")
 selected_driver = st.selectbox("Driver to call out", sorted(set(info['driver'] for info in dogs_going_today.values())))
 selected_groups = st.multiselect("Groups affected", [1, 2, 3], default=[1, 2, 3])
@@ -101,7 +104,6 @@ if st.button("Reassign Dogs"):
     for g in selected_groups:
         driver_callouts[selected_driver][f"group{g}"] = True
 
-    # Identify dogs to reassign
     dogs_to_reassign = []
     for dog_id, info in dogs_going_today.items():
         if info["driver"] != selected_driver:
@@ -115,67 +117,54 @@ if st.button("Reassign Dogs"):
                 'dog_info': info
             })
 
-    # Build driver loads
     driver_loads = defaultdict(lambda: {'group1': 0, 'group2': 0, 'group3': 0})
     for dog_id, info in dogs_going_today.items():
         for g in info['groups']:
             driver_loads[info['driver']][f'group{g}'] += info['num_dogs']
 
-    # 🌟 Fringe optimization pre-step
+    assignments = []
     fringe_moves = []
-    used_slots = set()
+    domino_evictions = []
 
-    for callout_dog in dogs_to_reassign:
-        cid = callout_dog['dog_id']
-        cgroups = callout_dog['original_groups']
+    # Fringe move pre-step
+    for dog in dogs_to_reassign:
+        cid = dog['dog_id']
+        cgroups = dog['original_groups']
         cdistances = distance_matrix.get(cid, {})
         for other_id, dist in cdistances.items():
-            if dist == 0 or dist > 0.5 or other_id not in dogs_going_today:
+            if dist == 0 or dist > FRINGE_DISTANCE_LIMIT or other_id not in dogs_going_today:
                 continue
-            fringe_dog = dogs_going_today[other_id]
-            target_driver = fringe_dog['driver']
-            if target_driver == selected_driver:
+            target_dog = dogs_going_today[other_id]
+            t_driver = target_dog['driver']
+            if t_driver == selected_driver:
                 continue
-            for g in fringe_dog['groups']:
+            for g in target_dog['groups']:
                 cap_key = f"group{g}"
-                if driver_loads[target_driver][cap_key] < driver_capacities.get(target_driver, {}).get(cap_key, 9):
-                    continue  # not full, no need to optimize
-                # Check if fringe_dog can move to another group
-                options = distance_matrix.get(other_id, {})
-                swap_candidates = []
-                for cand_id, d2 in options.items():
-                    if d2 == 0 or d2 > 0.5 or cand_id == cid or cand_id not in dogs_going_today:
+                if driver_loads[t_driver][cap_key] < driver_capacities[t_driver][cap_key]:
+                    continue
+                for move_id, d2 in distance_matrix.get(other_id, {}).items():
+                    if d2 == 0 or d2 > FRINGE_DISTANCE_LIMIT or move_id == cid or move_id not in dogs_going_today:
                         continue
-                    target_info = dogs_going_today[cand_id]
-                    t_driver = target_info["driver"]
-                    t_groups = target_info["groups"]
-                    if any(gg in t_groups for gg in fringe_dog['groups']):
-                        total_distance = sum(float(x) for x in options.values() if x > 0)
-                        swap_candidates.append((cand_id, t_driver, g, d2, total_distance))
-                if swap_candidates:
-                    swap_candidates.sort(key=lambda x: x[-1])  # shortest total ride distance
-                    new_target = swap_candidates[0]
-                    # Perform the fringe move
-                    driver_loads[target_driver][f"group{g}"] -= fringe_dog['num_dogs']
-                    driver_loads[new_target[1]][f"group{g}"] += fringe_dog['num_dogs']
-                    fringe_moves.append({
-                        "dog_id": other_id,
-                        "from_driver": target_driver,
-                        "to_driver": new_target[1],
-                        "group": g
-                    })
-                    dogs_going_today[other_id]['driver'] = new_target[1]
-                    dogs_going_today[other_id]['assignment'] = f"{new_target[1]}:{'&'.join(map(str, fringe_dog['groups']))}"
-                    break
-    # Normal greedy reassignment loop
-    assignments = []
+                    candidate = dogs_going_today[move_id]
+                    if any(gg in candidate['groups'] for gg in target_dog['groups']):
+                        fringe_moves.append({
+                            "dog_id": other_id,
+                            "from_driver": t_driver,
+                            "to_driver": candidate['driver'],
+                            "group": g
+                        })
+                        driver_loads[t_driver][cap_key] -= target_dog['num_dogs']
+                        driver_loads[candidate['driver']][cap_key] += target_dog['num_dogs']
+                        dogs_going_today[other_id]['driver'] = candidate['driver']
+                        dogs_going_today[other_id]['assignment'] = f"{candidate['driver']}:{'&'.join(map(str, target_dog['groups']))}"
+                        break
+
     for dog in dogs_to_reassign:
         dog_id = dog['dog_id']
         dog_groups = dog['original_groups']
         num_dogs = dog['dog_info']['num_dogs']
         distances = distance_matrix.get(dog_id, {})
-        best_driver = None
-        best_dist = float('inf')
+        best_driver, best_dist = None, float('inf')
         for other_id, dist in distances.items():
             if dist == 0 or other_id not in dogs_going_today:
                 continue
@@ -188,10 +177,42 @@ if st.button("Reassign Dogs"):
             if not (exact or adjacent):
                 continue
             weighted = dist if exact else dist * 2
+            if weighted > best_dist:
+                continue
             fits = all(driver_loads[candidate_driver][f"group{g}"] + num_dogs <= driver_capacities[candidate_driver][f"group{g}"] for g in dog_groups)
-            if fits and weighted < best_dist:
-                best_driver = candidate_driver
-                best_dist = weighted
+            if fits:
+                best_driver, best_dist = candidate_driver, weighted
+
+        # Smart domino fallback
+        if not best_driver and all(distance_matrix.get(dog_id, {}).get(x, float('inf')) > REASSIGNMENT_THRESHOLD for x in dogs_going_today):
+            for other_id, dist in distances.items():
+                if dist > PLACEMENT_GOAL_DISTANCE:
+                    continue
+                candidate_driver = dogs_going_today[other_id]['driver']
+                if candidate_driver == selected_driver:
+                    continue
+                for g in dog_groups:
+                    cap_key = f"group{g}"
+                    if candidate_driver in driver_capacities and driver_loads[candidate_driver][cap_key] >= driver_capacities[candidate_driver][cap_key]:
+                        for evict_id, edist in distance_matrix.items():
+                            if dog_id not in edist or edist[dog_id] > EVICTION_DISTANCE_LIMIT:
+                                continue
+                            evicted = dogs_going_today.get(evict_id)
+                            if evicted and evicted['driver'] == candidate_driver and g in evicted['groups']:
+                                domino_evictions.append({
+                                    "dog_id": evict_id,
+                                    "from_driver": candidate_driver,
+                                    "group": g
+                                })
+                                driver_loads[candidate_driver][cap_key] -= evicted['num_dogs']
+                                del dogs_going_today[evict_id]
+                                best_driver, best_dist = candidate_driver, dist
+                                break
+                    if best_driver:
+                        break
+                if best_driver:
+                    break
+
         if best_driver:
             for g in dog_groups:
                 driver_loads[best_driver][f"group{g}"] += num_dogs
@@ -203,18 +224,17 @@ if st.button("Reassign Dogs"):
                 "Distance": round(best_dist, 3)
             })
 
-    # Rollback unused fringe swaps
+    # Rollbacks
     used_ids = {a["Dog ID"] for a in assignments}
-    for move in fringe_moves:
-        if any(c["Dog ID"] == move["dog_id"] for c in assignments):
-            continue
-        # roll back
-        dogs_going_today[move["dog_id"]]["driver"] = move["from_driver"]
-        dogs_going_today[move["dog_id"]]["assignment"] = f"{move['from_driver']}:{move['group']}"
-        driver_loads[move["to_driver"]][f"group{move['group']}"] -= dogs_going_today[move["dog_id"]]["num_dogs"]
-        driver_loads[move["from_driver"]][f"group{move['group']}"] += dogs_going_today[move["dog_id"]]["num_dogs"]
+    for move in fringe_moves + domino_evictions:
+        if move["dog_id"] not in used_ids:
+            original = dogs_going_today.get(move["dog_id"])
+            if original:
+                dogs_going_today[move["dog_id"]]["driver"] = move["from_driver"]
+                dogs_going_today[move["dog_id"]]["assignment"] = f"{move['from_driver']}:{move['group']}"
+                driver_loads[move["from_driver"]][f"group{move['group']}"] += original["num_dogs"]
 
-    # Display final reassignment result
     result_df = pd.DataFrame(assignments)[["Dog ID", "New Assignment", "Distance"]]
     st.success("✅ Final Reassignments")
     st.dataframe(result_df)
+
