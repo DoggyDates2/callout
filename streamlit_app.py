@@ -817,7 +817,17 @@ if st.button("🗺️ Generate Interactive Map"):
             st.write("✅ Step 2 complete: Map created successfully")
             
             st.write("🔄 Step 3: Displaying map...")
-            st_folium(folium_map, width=1000, height=600)
+            # DEBUG: Check what we actually have
+            st.write(f"🔍 DEBUG: folium_map type = {type(folium_map)}")
+            st.write(f"🔍 DEBUG: Is it a tuple? {isinstance(folium_map, tuple)}")
+            if isinstance(folium_map, tuple):
+                st.error(f"🚨 folium_map is still a tuple with {len(folium_map)} items!")
+                st.write(f"First item type: {type(folium_map[0])}")
+                # Try using the first item if it's a tuple
+                actual_map = folium_map[0]
+                st_folium(actual_map, width=1000, height=600)
+            else:
+                st_folium(folium_map, width=1000, height=600)
             st.write("✅ Step 3 complete: Map displayed")
             
         except Exception as e:
