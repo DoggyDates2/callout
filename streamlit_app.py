@@ -326,6 +326,10 @@ for i, row in matrix_df.iterrows():
 
 # Show current callouts from Google Sheets
 st.subheader("🚨 Current Driver Callouts (from Google Sheets)")
+
+# Distance limits info
+st.info("🛡️ **Distance Limits:** Max 5 miles total | Exact group match: 3 miles | Adjacent group: 1.5 miles")
+
 callout_found = False
 for driver, callouts in driver_callouts.items():
     called_out_groups = []
@@ -339,6 +343,32 @@ for driver, callouts in driver_callouts.items():
 
 if not callout_found:
     st.success("✅ No drivers calling out today!")
+
+# Debug section for distance matrix
+with st.expander("🔍 Debug: Check Distance Matrix Data"):
+    if st.button("Check for suspicious distances"):
+        suspicious_distances = []
+        high_distances = []
+        
+        for dog_id, distances in distance_matrix.items():
+            for other_id, dist in distances.items():
+                if dist == 100:  # Exact 100 mile matches are suspicious
+                    suspicious_distances.append(f"{dog_id} ↔ {other_id}: {dist} miles")
+                elif dist > 10:  # High distances
+                    high_distances.append(f"{dog_id} ↔ {other_id}: {dist} miles")
+        
+        if suspicious_distances:
+            st.warning(f"🚨 Found {len(suspicious_distances)} suspicious 100-mile distances:")
+            for item in suspicious_distances[:10]:  # Show first 10
+                st.write(f"  - {item}")
+        
+        if high_distances:
+            st.info(f"ℹ️ Found {len(high_distances)} distances > 10 miles (showing first 10):")
+            for item in high_distances[:10]:
+                st.write(f"  - {item}")
+        
+        if not suspicious_distances and not high_distances:
+            st.success("✅ No suspicious distances found!")
 
 # Manual callout override section
 st.subheader("🔧 Manual Callout Override (Testing)")
@@ -398,7 +428,7 @@ if process_reassignments:
         fringe_moves = []
         domino_evictions = []
 
-        # Main reassignment logic (same as before)
+        # Main reassignment logic with distance limits
         for dog in dogs_to_reassign:
             dog_id = dog['dog_id']
             dog_groups = dog['original_groups']
@@ -407,8 +437,10 @@ if process_reassignments:
             best_driver, best_dist = None, float('inf')
             
             for other_id, dist in distances.items():
-                if dist == 0 or other_id not in dogs_going_today:
+                # Skip if distance is 0, too far, or not in today's assignments
+                if dist == 0 or dist > 5.0 or other_id not in dogs_going_today:  # 5 mile limit
                     continue
+                    
                 candidate_driver = dogs_going_today[other_id]['driver']
                 if candidate_driver == dog['original_driver'] or candidate_driver not in driver_capacities:
                     continue
@@ -428,8 +460,11 @@ if process_reassignments:
                 if not (exact or adjacent):
                     continue
                 
+                # Apply stricter distance limits for different match types
                 weighted = dist if exact else dist * 2
-                if weighted > best_dist:
+                max_allowed = 3.0 if exact else 1.5  # Exact: 3 miles, Adjacent: 1.5 miles
+                
+                if weighted > max_allowed or weighted > best_dist:
                     continue
                 
                 fits = all(driver_loads[candidate_driver][f"group{g}"] + num_dogs <= driver_capacities[candidate_driver][f"group{g}"] for g in dog_groups)
@@ -446,6 +481,9 @@ if process_reassignments:
                     "New Assignment": f"{best_driver}:{'&'.join(map(str, dog_groups))}",
                     "Distance": round(best_dist, 3)
                 })
+            else:
+                # Log dogs that couldn't be reassigned within distance limits
+                st.warning(f"⚠️ Could not reassign {dog_id} within 5-mile limit")
 
         if assignments:
             result_df = pd.DataFrame(assignments)[["Dog ID", "New Assignment", "Distance"]]
