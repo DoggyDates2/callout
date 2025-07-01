@@ -18,7 +18,7 @@ PLACEMENT_GOAL_DISTANCE = 0.5
 
 url_map = "https://docs.google.com/spreadsheets/d/1mg8d5CLxSR54KhNUL8SpL5jzrGN-bghTsC9vxSK8lR0/export?format=csv&gid=267803750"
 url_matrix = "https://docs.google.com/spreadsheets/d/1421xCS86YH6hx0RcuZCyXkyBK_xl-VDSlXyDNvw09Pg/export?format=csv&gid=398422902"
-url_geocodes = "https://docs.google.com/spreadsheets/d/1mg8d5CLxSR54KhNUL8SpL5jzrGN-bghTsC9vxSK8lR0/export?format=csv&gid=101453373"  # Add your geocodes tab GID here
+url_geocodes = "https://docs.google.com/spreadsheets/d/1mg8d5CLxSR54KhNUL8SpL5jzrGN-bghTsC9vxSK8lR0/export?format=csv&gid=YOUR_GEOCODES_GID"  # Add your geocodes tab GID here
 
 def get_reassignment_priority(dog_data):
     """Calculate priority for dog reassignment. Lower number = higher priority."""
@@ -42,9 +42,20 @@ def load_csv(url):
 def load_geocodes():
     """Load geocodes from Google Sheets by Dog ID"""
     try:
+        st.write(f"🔍 Trying to load: {url_geocodes}")
+        
         # Load from your geocodes Google Sheet tab
         geocodes_df = pd.read_csv(url_geocodes, dtype=str)
+        st.write(f"✅ Successfully loaded CSV with {len(geocodes_df)} rows")
+        st.write(f"📋 Columns found: {list(geocodes_df.columns)}")
+        
+        # Show a sample of the data
+        st.write("📊 Sample data:")
+        st.write(geocodes_df.head(3))
+        
         geocodes_dict = {}
+        valid_count = 0
+        invalid_count = 0
         
         for _, row in geocodes_df.iterrows():
             dog_id = str(row.get('Dog ID', '')).strip()
@@ -52,8 +63,13 @@ def load_geocodes():
                 lat_val = row.get('LATTITUDE', '')
                 lon_val = row.get('LONGITUDE', '')
                 
+                # Debug: show what we're getting
+                if valid_count < 3:  # Show first 3 for debugging
+                    st.write(f"🔍 Dog {dog_id}: lat='{lat_val}' (type: {type(lat_val)}), lon='{lon_val}' (type: {type(lon_val)})")
+                
                 # Skip if values are empty, NaN, or invalid
                 if pd.isna(lat_val) or pd.isna(lon_val) or lat_val == '' or lon_val == '':
+                    invalid_count += 1
                     continue
                 
                 lat = float(lat_val)
@@ -61,21 +77,27 @@ def load_geocodes():
                 
                 # Skip if coordinates are invalid (0,0 or NaN)
                 if pd.isna(lat) or pd.isna(lon) or (lat == 0 and lon == 0):
+                    invalid_count += 1
                     continue
                     
                 if dog_id:
                     geocodes_dict[dog_id] = {'lat': lat, 'lon': lon}
+                    valid_count += 1
                     
-            except (ValueError, TypeError):
+            except (ValueError, TypeError) as e:
+                invalid_count += 1
+                if invalid_count < 3:  # Show first few errors
+                    st.write(f"⚠️ Error processing {dog_id}: {e}")
                 continue
         
-        st.info(f"📍 Loaded {len(geocodes_dict)} valid geocoded locations from Google Sheets")
+        st.success(f"📍 Loaded {valid_count} valid geocoded locations, skipped {invalid_count} invalid ones")
         return geocodes_dict
         
     except Exception as e:
-        st.warning(f"⚠️ Could not load geocodes: {e}")
-        st.info("💡 Make sure your geocodes tab URL is set correctly")
-        return {}
+        st.error(f"❌ Failed to load geocodes: {e}")
+        st.error(f"🔍 Error type: {type(e).__name__}")
+        st.info("🔄 Using fallback address geocoding (slower but works)")
+        return {}  # Return empty dict to use address geocoding fallback
 
 def get_coordinates_for_dog(dog_id, dog_info, geocodes_dict):
     """Get coordinates for a dog, using geocodes lookup first, then fallback to address geocoding"""
@@ -500,11 +522,25 @@ st.info("📍 Blue paw = Original assignment | 🔄 Red refresh = Reassigned dog
 
 if st.button("🗺️ Generate Interactive Map"):
     # Load geocodes from Google Sheets
+    st.write("🔄 Step 1: Loading geocodes...")
     geocodes_dict = load_geocodes()
+    st.write(f"✅ Step 1 complete: {len(geocodes_dict)} geocodes loaded")
     
+    st.write("🔄 Step 2: Creating map...")
     with st.spinner("Creating map using geocoded locations..."):
-        assignment_map = create_assignment_map(dogs_going_today, assignments, geocodes_dict)
-        st_folium(assignment_map, width=1000, height=600)
+        try:
+            assignment_map = create_assignment_map(dogs_going_today, assignments, geocodes_dict)
+            st.write("✅ Step 2 complete: Map created successfully")
+            
+            st.write("🔄 Step 3: Displaying map...")
+            st_folium(assignment_map, width=1000, height=600)
+            st.write("✅ Step 3 complete: Map displayed")
+            
+        except Exception as e:
+            st.error(f"❌ Map creation failed at step 2: {e}")
+            st.error(f"Error type: {type(e).__name__}")
+            import traceback
+            st.error(f"Full traceback: {traceback.format_exc()}")
 
 # Summary statistics
 st.subheader("📊 Summary")
