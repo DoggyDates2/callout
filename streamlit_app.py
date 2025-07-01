@@ -42,6 +42,11 @@ def load_csv(url):
 @st.cache_data
 def load_geocodes():
     """Load geocodes from Google Sheets by Dog ID"""
+    # Check if geocodes are disabled
+    if st.session_state.get('disable_geocodes', False):
+        st.info("🔄 Geocodes disabled - using address geocoding only")
+        return {}
+    
     try:
         # Load from your geocodes Google Sheet tab
         geocodes_df = pd.read_csv(url_geocodes, dtype=str)
@@ -76,6 +81,7 @@ def load_geocodes():
     except Exception as e:
         st.warning(f"⚠️ Could not load geocodes: {e}")
         st.info("🔄 Using fallback address geocoding (slower but works)")
+        st.info("💡 Try the 'DISABLE GEOCODES' button above for a temporary fix")
         return {}  # Return empty dict to use address geocoding fallback
 
 def get_coordinates_for_dog(dog_id, dog_info, geocodes_dict):
@@ -548,24 +554,62 @@ with st.expander("🔧 Data Source Status"):
     st.write("**📍 Geocodes Sheet (Published):**")
     st.code(url_geocodes, language="text")
     
-    if st.button("🧪 Test All Published URLs"):
-        try:
-            # Test main sheet
-            test_map = pd.read_csv(url_map, nrows=3)
-            st.success("✅ Main assignments sheet works!")
-            
-            # Test matrix  
-            test_matrix = pd.read_csv(url_matrix, nrows=3)
-            st.success("✅ Distance matrix sheet works!")
-            
-            # Test geocodes
-            test_geocodes = pd.read_csv(url_geocodes, nrows=3)
-            st.success("✅ Geocodes sheet works!")
-            
-            st.info("🎉 **All published URLs working perfectly!**")
-            
-        except Exception as e:
-            st.error(f"❌ URL test failed: {e}")
+    # Individual URL testing
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("🧪 Test Main Sheet"):
+            try:
+                test_df = pd.read_csv(url_map, nrows=3)
+                st.success("✅ Main sheet works!")
+                st.dataframe(test_df.head(2))
+            except Exception as e:
+                st.error(f"❌ Main sheet failed: {e}")
+    
+        if st.button("🧪 Test Matrix Sheet"):
+            try:
+                test_df = pd.read_csv(url_matrix, nrows=3) 
+                st.success("✅ Matrix sheet works!")
+                st.dataframe(test_df.head(2))
+            except Exception as e:
+                st.error(f"❌ Matrix sheet failed: {e}")
+    
+    with col2:
+        if st.button("🧪 Test Geocodes Sheet"):
+            try:
+                test_df = pd.read_csv(url_geocodes, nrows=5)
+                st.success("✅ Geocodes sheet works!")
+                st.dataframe(test_df.head(3))
+                st.info(f"Columns: {list(test_df.columns)}")
+            except Exception as e:
+                st.error(f"❌ Geocodes failed: {e}")
+                st.write("**Let's try alternative URLs:**")
+                
+                # Try alternative formats
+                alt_url1 = url_geocodes.replace("pub?output=csv", "pub?gid=0&single=true&output=csv")
+                alt_url2 = "https://docs.google.com/spreadsheets/d/1SuvioVrk1aRwXQpPdYxNnzvyCsb4Opquq-9WSiASvi0/export?format=csv&gid=0"
+                
+                st.code(f"Alt 1: {alt_url1}")
+                st.code(f"Alt 2: {alt_url2}")
+    
+    # Temporary disable option
+    st.write("---")
+    st.write("**🔧 Temporary Fix While We Debug:**")
+    if st.button("⚡ DISABLE GEOCODES (Use Address Lookup Instead)"):
+        st.session_state['disable_geocodes'] = True
+        st.success("✅ Geocodes disabled! Maps will use address lookup (slower but works)")
+        st.info("Maps will take 2-3 minutes but will work reliably")
+    
+    if st.button("🔄 RE-ENABLE GEOCODES"):
+        st.session_state['disable_geocodes'] = False
+        st.success("✅ Geocodes re-enabled!")
+    
+    # Show current status
+    geocodes_disabled = st.session_state.get('disable_geocodes', False)
+    if geocodes_disabled:
+        st.warning("🔄 Currently using address geocoding (geocodes disabled)")
+    else:
+        st.info("📍 Currently trying to use geocodes (fast mode)")
     
     st.info("💡 **Benefits**: No permission issues, faster loading, bulletproof reliability!")
 
