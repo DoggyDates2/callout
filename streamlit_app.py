@@ -15,10 +15,11 @@ EVICTION_DISTANCE_LIMIT = 0.75
 FRINGE_DISTANCE_LIMIT = 0.5
 REASSIGNMENT_THRESHOLD = 1.5
 PLACEMENT_GOAL_DISTANCE = 0.5
+MAX_REASSIGNMENT_DISTANCE = 5.0  # Maximum distance for any reassignment
 
 url_map = "https://docs.google.com/spreadsheets/d/1mg8d5CLxSR54KhNUL8SpL5jzrGN-bghTsC9vxSK8lR0/export?format=csv&gid=267803750"
 url_matrix = "https://docs.google.com/spreadsheets/d/1421xCS86YH6hx0RcuZCyXkyBK_xl-VDSlXyDNvw09Pg/export?format=csv&gid=398422902"
-url_geocodes = "https://docs.google.com/spreadsheets/d/1mg8d5CLxSR54KhNUL8SpL5jzrGN-bghTsC9vxSK8lR0/export?format=csv&gid=101453373"  # Add your geocodes tab GID here
+url_geocodes = "https://docs.google.com/spreadsheets/d/1mg8d5CLxSR54KhNUL8SpL5jzrGN-bghTsC9vxSK8lR0/export?format=csv&gid=YOUR_GEOCODES_GID"  # Add your geocodes tab GID here
 
 def get_reassignment_priority(dog_data):
     """Calculate priority for dog reassignment. Lower number = higher priority."""
@@ -42,34 +43,18 @@ def load_csv(url):
 def load_geocodes():
     """Load geocodes from Google Sheets by Dog ID"""
     try:
-        st.write(f"🔍 Trying to load: {url_geocodes}")
-        
         # Load from your geocodes Google Sheet tab
         geocodes_df = pd.read_csv(url_geocodes, dtype=str)
-        st.write(f"✅ Successfully loaded CSV with {len(geocodes_df)} rows")
-        st.write(f"📋 Columns found: {list(geocodes_df.columns)}")
-        
-        # Show a sample of the data
-        st.write("📊 Sample data:")
-        st.write(geocodes_df.head(3))
-        
         geocodes_dict = {}
-        valid_count = 0
-        invalid_count = 0
         
         for _, row in geocodes_df.iterrows():
             dog_id = str(row.get('Dog ID', '')).strip()
             try:
-                lat_val = row.get('LATITUDE', '')
+                lat_val = row.get('LATITUDE', '')  # Updated column name
                 lon_val = row.get('LONGITUDE', '')
-                
-                # Debug: show what we're getting
-                if valid_count < 3:  # Show first 3 for debugging
-                    st.write(f"🔍 Dog {dog_id}: lat='{lat_val}' (type: {type(lat_val)}), lon='{lon_val}' (type: {type(lon_val)})")
                 
                 # Skip if values are empty, NaN, or invalid
                 if pd.isna(lat_val) or pd.isna(lon_val) or lat_val == '' or lon_val == '':
-                    invalid_count += 1
                     continue
                 
                 lat = float(lat_val)
@@ -77,25 +62,19 @@ def load_geocodes():
                 
                 # Skip if coordinates are invalid (0,0 or NaN)
                 if pd.isna(lat) or pd.isna(lon) or (lat == 0 and lon == 0):
-                    invalid_count += 1
                     continue
                     
                 if dog_id:
                     geocodes_dict[dog_id] = {'lat': lat, 'lon': lon}
-                    valid_count += 1
                     
-            except (ValueError, TypeError) as e:
-                invalid_count += 1
-                if invalid_count < 3:  # Show first few errors
-                    st.write(f"⚠️ Error processing {dog_id}: {e}")
+            except (ValueError, TypeError):
                 continue
         
-        st.success(f"📍 Loaded {valid_count} valid geocoded locations, skipped {invalid_count} invalid ones")
+        st.info(f"📍 Loaded {len(geocodes_dict)} valid geocoded locations from Google Sheets")
         return geocodes_dict
         
     except Exception as e:
-        st.error(f"❌ Failed to load geocodes: {e}")
-        st.error(f"🔍 Error type: {type(e).__name__}")
+        st.warning(f"⚠️ Could not load geocodes: {e}")
         st.info("🔄 Using fallback address geocoding (slower but works)")
         return {}  # Return empty dict to use address geocoding fallback
 
@@ -160,13 +139,13 @@ def geocode_address_with_cache(address, _cache_dict=None):
     except Exception as e:
         return None, None, False
 
-def get_driver_color(driver_name):
-    """Get a consistent color for each driver"""
+def get_driver_color_name(driver_name):
+    """Get a folium-compatible color name for each driver"""
     colors = [
-        '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7',
-        '#DDA0DD', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E9',
-        '#F8C471', '#82E0AA', '#F1948A', '#85C1E9', '#D2B4DE',
-        '#AED6F1', '#A3E4D7', '#F9E79F', '#FADBD8', '#D5DBDB'
+        'red', 'blue', 'green', 'purple', 'orange', 'darkred',
+        'lightred', 'beige', 'darkblue', 'darkgreen', 'cadetblue',
+        'darkpurple', 'white', 'pink', 'lightblue', 'lightgreen',
+        'gray', 'black', 'lightgray'
     ]
     
     # Use hash of driver name to get consistent color
@@ -176,12 +155,30 @@ def get_driver_color(driver_name):
 def create_assignment_map(dogs_going_today, reassignments, geocodes_dict):
     """Create an interactive map showing dog assignments"""
     
-    # Create a map centered on a reasonable location (you may want to adjust this)
-    m = folium.Map(location=[42.3601, -71.0589], zoom_start=10)  # Boston area - adjust as needed
+    # Find center point from actual dog locations
+    valid_coords = []
+    for dog_id, dog_info in dogs_going_today.items():
+        lat, lon, source = get_coordinates_for_dog(dog_id, dog_info, geocodes_dict)
+        if lat is not None and lon is not None and pd.notna(lat) and pd.notna(lon):
+            valid_coords.append([lat, lon])
+    
+    # Calculate center point
+    if valid_coords:
+        center_lat = sum(coord[0] for coord in valid_coords) / len(valid_coords)
+        center_lon = sum(coord[1] for coord in valid_coords) / len(valid_coords)
+    else:
+        center_lat, center_lon = 42.3601, -71.0589  # Default to Boston area
+    
+    # Create map centered on actual data
+    m = folium.Map(
+        location=[center_lat, center_lon], 
+        zoom_start=11,
+        tiles='OpenStreetMap'
+    )
     
     # Get unique drivers and create color mapping
     all_drivers = set(info['driver'] for info in dogs_going_today.values())
-    driver_colors = {driver: get_driver_color(driver) for driver in all_drivers}
+    driver_colors = {driver: get_driver_color_name(driver) for driver in all_drivers}
     
     # Track reassigned dogs
     reassigned_dog_ids = set(r['Dog ID'] for r in reassignments) if reassignments else set()
@@ -219,28 +216,36 @@ def create_assignment_map(dogs_going_today, reassignments, geocodes_dict):
         
         # Determine marker style
         driver = dog_info['driver']
-        color = driver_colors.get(driver, '#000000')
+        driver_color = driver_colors.get(driver, 'gray')
         
         # Different icon for reassigned dogs
         if dog_id in reassigned_dog_ids:
-            icon = folium.Icon(color='red', icon='refresh', prefix='fa')
-            marker_size = 10
+            icon = folium.Icon(
+                color=driver_color, 
+                icon='refresh',
+                prefix='fa'
+            )
         else:
-            icon = folium.Icon(color='blue', icon='paw', prefix='fa')  
-            marker_size = 8
+            icon = folium.Icon(
+                color=driver_color,
+                icon='paw',
+                prefix='fa'
+            )
         
         # Create popup text
         groups_str = '&'.join(map(str, dog_info['groups']))
         assignment_status = "REASSIGNED" if dog_id in reassigned_dog_ids else "Original"
         
         popup_text = f"""
+        <div style="font-family: Arial; font-size: 12px;">
         <b>Dog ID:</b> {dog_id}<br>
         <b>Name:</b> {dog_info.get('dog_name', 'Unknown')}<br>
-        <b>Driver:</b> {driver}<br>
+        <b>Driver:</b> <span style="color: {driver_color}; font-weight: bold;">{driver}</span><br>
         <b>Groups:</b> {groups_str}<br>
         <b>Dogs at stop:</b> {dog_info['num_dogs']}<br>
         <b>Status:</b> {assignment_status}<br>
         <b>Address:</b> {dog_info.get('address', 'Unknown')}
+        </div>
         """
         
         # Add marker to map
@@ -254,16 +259,22 @@ def create_assignment_map(dogs_going_today, reassignments, geocodes_dict):
     progress_bar.progress(1.0)
     status_text.text(f"🗺️ Map complete! Cached: {from_cache}, Geocoded: {newly_geocoded}, Failed: {failed_geocode}")
     
-    # Add legend
-    legend_html = """
+    # Create legend with actual driver colors
+    legend_items = []
+    for driver in sorted(all_drivers):
+        color = driver_colors[driver]
+        legend_items.append(f'<p><span style="color: {color}; font-size: 16px;">●</span> {driver}</p>')
+    
+    legend_html = f"""
     <div style="position: fixed; 
-                bottom: 50px; right: 50px; width: 200px; height: 120px; 
+                bottom: 50px; right: 50px; width: 220px; height: auto; max-height: 400px;
                 background-color: white; border:2px solid grey; z-index:9999; 
-                font-size:14px; padding: 10px">
-    <h4>Map Legend</h4>
+                font-size:12px; padding: 10px; overflow-y: auto;">
+    <h4 style="margin-top: 0;">Map Legend</h4>
     <p><i class="fa fa-paw" style="color:blue"></i> Original Assignment</p>
     <p><i class="fa fa-refresh" style="color:red"></i> Reassigned Dog</p>
-    <p><b>Colors:</b> Different drivers</p>
+    <h5>Drivers:</h5>
+    {''.join(legend_items)}
     </div>
     """
     m.get_root().html.add_child(folium.Element(legend_html))
@@ -350,7 +361,7 @@ for i, row in matrix_df.iterrows():
 st.subheader("🚨 Current Driver Callouts (from Google Sheets)")
 
 # Distance limits info
-st.info("🛡️ **Distance Limits:** Max 5 miles total | Exact group match: 3 miles | Adjacent group: 1.5 miles")
+st.info(f"🛡️ **Distance Limits:** Max {MAX_REASSIGNMENT_DISTANCE} miles total | Exact group match: 3 miles | Adjacent group: 1.5 miles")
 
 callout_found = False
 for driver, callouts in driver_callouts.items():
@@ -460,7 +471,7 @@ if process_reassignments:
             
             for other_id, dist in distances.items():
                 # Skip if distance is 0, too far, or not in today's assignments
-                if dist == 0 or dist > 5.0 or other_id not in dogs_going_today:  # 5 mile limit
+                if dist == 0 or dist > MAX_REASSIGNMENT_DISTANCE or other_id not in dogs_going_today:
                     continue
                     
                 candidate_driver = dogs_going_today[other_id]['driver']
@@ -505,7 +516,7 @@ if process_reassignments:
                 })
             else:
                 # Log dogs that couldn't be reassigned within distance limits
-                st.warning(f"⚠️ Could not reassign {dog_id} within 5-mile limit")
+                st.warning(f"⚠️ Could not reassign {dog_id} within {MAX_REASSIGNMENT_DISTANCE}-mile limit")
 
         if assignments:
             result_df = pd.DataFrame(assignments)[["Dog ID", "New Assignment", "Distance"]]
