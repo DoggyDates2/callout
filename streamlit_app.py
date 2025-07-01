@@ -19,7 +19,7 @@ MAX_REASSIGNMENT_DISTANCE = 5.0  # Maximum distance for any reassignment
 
 url_map = "https://docs.google.com/spreadsheets/d/1mg8d5CLxSR54KhNUL8SpL5jzrGN-bghTsC9vxSK8lR0/export?format=csv&gid=267803750"
 url_matrix = "https://docs.google.com/spreadsheets/d/1421xCS86YH6hx0RcuZCyXkyBK_xl-VDSlXyDNvw09Pg/export?format=csv&gid=398422902"
-url_geocodes = "https://docs.google.com/spreadsheets/d/1mg8d5CLxSR54KhNUL8SpL5jzrGN-bghTsC9vxSK8lR0/export?format=csv&gid=101453373"  # Add your geocodes tab GID here
+url_geocodes = "https://docs.google.com/spreadsheets/d/1mg8d5CLxSR54KhNUL8SpL5jzrGN-bghTsC9vxSK8lR0/export?format=csv&gid=YOUR_GEOCODES_GID"  # Add your geocodes tab GID here
 
 def get_reassignment_priority(dog_data):
     """Calculate priority for dog reassignment. Lower number = higher priority."""
@@ -155,6 +155,12 @@ def get_driver_color_name(driver_name):
 def create_assignment_map(dogs_going_today, reassignments, geocodes_dict):
     """Create an interactive map showing dog assignments"""
     
+    # Calculate current driver loads
+    driver_loads = defaultdict(lambda: {'group1': 0, 'group2': 0, 'group3': 0})
+    for dog_id, info in dogs_going_today.items():
+        for g in info['groups']:
+            driver_loads[info['driver']][f'group{g}'] += info['num_dogs']
+    
     # Find center point from actual dog locations
     valid_coords = []
     for dog_id, dog_info in dogs_going_today.items():
@@ -218,6 +224,18 @@ def create_assignment_map(dogs_going_today, reassignments, geocodes_dict):
         driver = dog_info['driver']
         driver_color = driver_colors.get(driver, 'gray')
         
+        # Get driver capacity info
+        driver_capacity = driver_capacities.get(driver, {'group1': 9, 'group2': 9, 'group3': 9})
+        driver_load = driver_loads.get(driver, {'group1': 0, 'group2': 0, 'group3': 0})
+        
+        # Calculate available capacity
+        capacity_info = []
+        for group_num in [1, 2, 3]:
+            current = driver_load[f'group{group_num}']
+            total = driver_capacity[f'group{group_num}']
+            available = total - current
+            capacity_info.append(f"Group {group_num}: {current}/{total} ({available} available)")
+        
         # Different icon for reassigned dogs
         if dog_id in reassigned_dog_ids:
             icon = folium.Icon(
@@ -230,7 +248,7 @@ def create_assignment_map(dogs_going_today, reassignments, geocodes_dict):
                 icon='info-sign'
             )
         
-        # Create popup text
+        # Create popup text with capacity info
         groups_str = '&'.join(map(str, dog_info['groups']))
         assignment_status = "REASSIGNED" if dog_id in reassigned_dog_ids else "Original"
         
@@ -242,17 +260,22 @@ def create_assignment_map(dogs_going_today, reassignments, geocodes_dict):
         <b>Groups:</b> {groups_str}<br>
         <b>Dogs at stop:</b> {dog_info['num_dogs']}<br>
         <b>Status:</b> {assignment_status}<br>
-        <b>Address:</b> {dog_info.get('address', 'Unknown')}
+        <b>Address:</b> {dog_info.get('address', 'Unknown')}<br>
+        <hr>
+        <b style="color: #0066cc;">Driver Capacity:</b><br>
+        {'<br>'.join(capacity_info)}
         </div>
         """
         
-        # Create tooltip with driver:groups format
-        tooltip_text = f"{driver}:{groups_str}"
+        # Create tooltip with driver:groups and capacity summary
+        total_current = sum(driver_load.values())
+        total_capacity = sum(driver_capacity.values())
+        tooltip_text = f"{driver}:{groups_str} ({total_current}/{total_capacity})"
         
         # Add marker to map
         folium.Marker(
             location=[lat, lon],
-            popup=folium.Popup(popup_text, max_width=300),
+            popup=folium.Popup(popup_text, max_width=350),
             tooltip=tooltip_text,
             icon=icon
         ).add_to(m)
@@ -260,7 +283,7 @@ def create_assignment_map(dogs_going_today, reassignments, geocodes_dict):
     progress_bar.progress(1.0)
     status_text.text(f"🗺️ Map complete! Cached: {from_cache}, Geocoded: {newly_geocoded}, Failed: {failed_geocode}")
     
-    return m
+    return m, driver_loads
 
 def generate_radius_steps(start=0.25, max_radius=2.2, step=0.25):
     current = start
@@ -510,21 +533,22 @@ if process_reassignments:
 
 # Create and display the map
 st.subheader("🗺️ Assignment Map")
-st.info("📍 Hover over markers to see Driver:Groups | Click for full details | Colors = Different drivers")
+st.info("📍 Hover for Driver:Groups (used/capacity) | Click markers for full capacity details | Colors = Different drivers")
 
 # Quick geocodes troubleshooting
-with st.expander("🔧 Geocodes Troubleshooting"):
-    st.write("**Current geocodes URL:**")
+with st.expander("🔧 Geocodes Status"):
+    st.write("**Using dedicated geocodes sheet (fast!):**")
     st.code(url_geocodes)
     
-    if st.button("🧪 Test Geocodes URL"):
+    if st.button("🧪 Test New Geocodes Sheet"):
         try:
             test_df = pd.read_csv(url_geocodes, nrows=5)
-            st.success("✅ URL works! Sample data:")
+            st.success("✅ Dedicated sheet works! Sample data:")
             st.dataframe(test_df)
+            st.info(f"📊 Expected format: Dog ID, LATITUDE, LONGITUDE columns")
         except Exception as e:
-            st.error(f"❌ URL failed: {e}")
-            st.info("💡 The system will automatically use address geocoding if this fails")
+            st.error(f"❌ New sheet failed: {e}")
+            st.info("💡 Check that the sheet is shared as 'Anyone with link can view'")
 
 if st.button("🗺️ Generate Interactive Map"):
     # Load geocodes from Google Sheets
