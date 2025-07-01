@@ -42,10 +42,6 @@ def load_csv(url):
 @st.cache_data
 def load_geocodes():
     """Load geocodes from Google Sheets by Dog ID"""
-    if not USE_GEOCODES:
-        st.info("🔄 Geocodes disabled - using address geocoding only")
-        return {}
-        
     try:
         # Load from your geocodes Google Sheet tab
         geocodes_df = pd.read_csv(url_geocodes, dtype=str)
@@ -74,7 +70,7 @@ def load_geocodes():
             except (ValueError, TypeError):
                 continue
         
-        st.info(f"📍 Loaded {len(geocodes_dict)} valid geocoded locations from Google Sheets")
+        st.success(f"📍 Loaded {len(geocodes_dict)} valid geocoded locations from Google Sheets")
         return geocodes_dict
         
     except Exception as e:
@@ -550,10 +546,7 @@ with st.expander("🔧 Geocodes Troubleshooting"):
             st.dataframe(test_df)
         except Exception as e:
             st.error(f"❌ URL failed: {e}")
-            st.info("💡 Try setting USE_GEOCODES = False at the top of the code for now")
-    
-    st.write("**Quick fix if geocodes keep failing:**")
-    st.code("USE_GEOCODES = False  # Add this near the top of the code")
+            st.info("💡 The system will automatically use address geocoding if this fails")
 
 if st.button("🗺️ Generate Interactive Map"):
     # Load geocodes from Google Sheets
