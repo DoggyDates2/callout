@@ -222,14 +222,12 @@ def create_assignment_map(dogs_going_today, reassignments, geocodes_dict):
         if dog_id in reassigned_dog_ids:
             icon = folium.Icon(
                 color=driver_color, 
-                icon='refresh',
-                prefix='fa'
+                icon='refresh'
             )
         else:
             icon = folium.Icon(
                 color=driver_color,
-                icon='paw',
-                prefix='fa'
+                icon='info-sign'
             )
         
         # Create popup text
@@ -261,26 +259,6 @@ def create_assignment_map(dogs_going_today, reassignments, geocodes_dict):
     
     progress_bar.progress(1.0)
     status_text.text(f"🗺️ Map complete! Cached: {from_cache}, Geocoded: {newly_geocoded}, Failed: {failed_geocode}")
-    
-    # Create legend with actual driver colors
-    legend_items = []
-    for driver in sorted(all_drivers):
-        color = driver_colors[driver]
-        legend_items.append(f'<p><span style="color: {color}; font-size: 16px;">●</span> {driver}</p>')
-    
-    legend_html = f"""
-    <div style="position: fixed; 
-                bottom: 50px; right: 50px; width: 220px; height: auto; max-height: 400px;
-                background-color: white; border:2px solid grey; z-index:9999; 
-                font-size:12px; padding: 10px; overflow-y: auto;">
-    <h4 style="margin-top: 0;">Map Legend</h4>
-    <p><i class="fa fa-paw" style="color:blue"></i> Original Assignment</p>
-    <p><i class="fa fa-refresh" style="color:red"></i> Reassigned Dog</p>
-    <h5>Drivers:</h5>
-    {''.join(legend_items)}
-    </div>
-    """
-    m.get_root().html.add_child(folium.Element(legend_html))
     
     return m
 
