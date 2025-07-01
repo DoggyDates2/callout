@@ -368,6 +368,167 @@ for i, row in matrix_df.iterrows():
             val = 0.0
         distance_matrix[row_id][str(col_id).strip()] = val
 
+# REASSIGNMENT DEBUG CENTER
+st.subheader("🔍 REASSIGNMENT DEBUG CENTER")
+with st.expander("🐛 Click to Debug What's Broken"):
+    
+    if st.button("🕵️ Run Full Diagnostic"):
+        st.write("### **Step 1: Callout Detection Test**")
+        
+        # Check if we're reading callouts correctly
+        callout_count = 0
+        callout_details = []
+        
+        for driver, callouts in driver_callouts.items():
+            called_out_groups = []
+            if callouts.get('group1', False): called_out_groups.append("Group 1")
+            if callouts.get('group2', False): called_out_groups.append("Group 2") 
+            if callouts.get('group3', False): called_out_groups.append("Group 3")
+            
+            if called_out_groups:
+                callout_count += 1
+                callout_details.append(f"✅ {driver}: {', '.join(called_out_groups)}")
+            else:
+                # Show drivers with no callouts for verification
+                callout_details.append(f"⚪ {driver}: No callouts")
+        
+        st.write(f"**Found {callout_count} drivers with callouts:**")
+        for detail in callout_details[:10]:  # Show first 10
+            st.write(f"  {detail}")
+        
+        if callout_count == 0:
+            st.error("🚨 **PROBLEM FOUND**: No callouts detected!")
+            st.write("**Possible causes:**")
+            st.write("• Column names changed in Google Sheet (should be 'Group 1', 'Group 2', 'Group 3')")
+            st.write("• No 'X' values in callout columns")
+            st.write("• Driver names column issue")
+            
+            # Show raw data sample
+            st.write("**Raw Google Sheet Sample:**")
+            sample_cols = ['Driver', 'Group 1', 'Group 2', 'Group 3']
+            available_cols = [col for col in sample_cols if col in map_df.columns]
+            if available_cols:
+                st.dataframe(map_df[available_cols].head(3))
+            else:
+                st.error(f"❌ Expected columns {sample_cols} not found!")
+                st.write(f"Available columns: {list(map_df.columns)}")
+        
+        st.write("---")
+        st.write("### **Step 2: Dogs Affected Test**")
+        
+        # Find dogs that should be reassigned
+        dogs_needing_reassignment = []
+        for dog_id, info in dogs_going_today.items():
+            driver = info["driver"]
+            if driver not in driver_callouts:
+                continue
+            
+            affected_groups = []
+            for g in info["groups"]:
+                if driver_callouts[driver].get(f"group{g}", False):
+                    affected_groups.append(g)
+            
+            if affected_groups:
+                dogs_needing_reassignment.append({
+                    'dog_id': dog_id,
+                    'driver': driver,
+                    'groups': info['groups'],
+                    'affected_groups': affected_groups
+                })
+        
+        st.write(f"**Found {len(dogs_needing_reassignment)} dogs needing reassignment:**")
+        if dogs_needing_reassignment:
+            for dog in dogs_needing_reassignment[:5]:  # Show first 5
+                st.write(f"  🐕 {dog['dog_id']}: {dog['driver']} (Groups {dog['groups']}, affected: {dog['affected_groups']})")
+        else:
+            st.error("🚨 **PROBLEM FOUND**: No dogs found for reassignment!")
+            st.write("**Possible causes:**")
+            st.write("• Driver names don't match between main sheet and callouts")
+            st.write("• Groups not parsing correctly")
+            st.write("• Logic error in affected group detection")
+        
+        st.write("---")
+        st.write("### **Step 3: Distance Matrix Test**")
+        
+        if dogs_needing_reassignment:
+            test_dog = dogs_needing_reassignment[0]
+            dog_id = test_dog['dog_id']
+            
+            distances = distance_matrix.get(dog_id, {})
+            st.write(f"**Testing distances for Dog {dog_id}:**")
+            
+            if not distances:
+                st.error(f"🚨 **PROBLEM FOUND**: Dog {dog_id} not found in distance matrix!")
+                st.write("**Available dogs in distance matrix:**")
+                st.write(list(distance_matrix.keys())[:10])  # Show first 10
+            else:
+                # Show nearby dogs
+                valid_distances = [(other_id, dist) for other_id, dist in distances.items() 
+                                 if dist > 0 and dist <= 5.0 and other_id in dogs_going_today]
+                valid_distances.sort(key=lambda x: x[1])  # Sort by distance
+                
+                st.write(f"**Found {len(valid_distances)} dogs within 5 miles:**")
+                for other_id, dist in valid_distances[:5]:  # Show closest 5
+                    other_driver = dogs_going_today[other_id]['driver']
+                    other_groups = dogs_going_today[other_id]['groups']
+                    st.write(f"  📍 {other_id}: {dist} miles → {other_driver} (Groups {other_groups})")
+        
+        st.write("---")
+        st.write("### **Step 4: Driver Capacity Test**")
+        
+        st.write(f"**Found {len(driver_capacities)} drivers with capacity data:**")
+        for driver, capacity in list(driver_capacities.items())[:5]:  # Show first 5
+            st.write(f"  👨‍💼 {driver}: G1={capacity['group1']}, G2={capacity['group2']}, G3={capacity['group3']}")
+        
+        # Check for capacity issues
+        missing_capacity_drivers = set(info['driver'] for info in dogs_going_today.values()) - set(driver_capacities.keys())
+        if missing_capacity_drivers:
+            st.warning(f"⚠️ **Missing capacity data for:** {list(missing_capacity_drivers)[:5]}")
+        
+        st.write("---")
+        st.success("🎯 **Diagnostic complete!** Check above for any red error messages.")
+
+    # Quick manual test buttons
+    st.write("**Quick Tests:**")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if st.button("📋 Check Sheet Columns"):
+            expected = ['Dog ID', 'Name', 'Group', 'Driver', 'Group 1', 'Group 2', 'Group 3']
+            available = list(map_df.columns)
+            missing = [col for col in expected if col not in available]
+            
+            if missing:
+                st.error(f"❌ Missing columns: {missing}")
+            else:
+                st.success("✅ All expected columns found!")
+            
+            st.write(f"**Available columns:** {available}")
+    
+    with col2:
+        if st.button("🎯 Test Group Parsing"):
+            sample_groups = map_df['Group'].head(5).tolist()
+            st.write("**Sample group strings:**")
+            for group_str in sample_groups:
+                parsed = get_groups(group_str)
+                st.write(f"  '{group_str}' → {parsed}")
+    
+    with col3:
+        if st.button("🔗 Check Driver Matching"):
+            main_drivers = set(info['driver'] for info in dogs_going_today.values())
+            callout_drivers = set(driver_callouts.keys())
+            capacity_drivers = set(driver_capacities.keys())
+            
+            st.write(f"**Main sheet drivers:** {len(main_drivers)}")
+            st.write(f"**Callout drivers:** {len(callout_drivers)}")
+            st.write(f"**Capacity drivers:** {len(capacity_drivers)}")
+            
+            missing_in_callouts = main_drivers - callout_drivers
+            if missing_in_callouts:
+                st.error(f"❌ Missing in callouts: {list(missing_in_callouts)[:3]}")
+            else:
+                st.success("✅ All drivers found in callouts!")
+
 # Show current callouts from Google Sheets
 st.subheader("🚨 Current Driver Callouts (from Google Sheets)")
 
