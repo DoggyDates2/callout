@@ -159,8 +159,9 @@ def get_driver_color_name(driver_name):
     driver_hash = hash(driver_name) % len(colors)
     return colors[driver_hash]
 
-def create_assignment_map(dogs_going_today, reassignments, geocodes_dict):
-    """Create an interactive map showing dog assignments"""
+folium_map, driver_loads_data = create_assignment_map(dogs_going_today, assignments, geocodes_dict)
+st_folium(folium_map, width=1000, height=600)
+
     
     # Calculate current driver loads
     driver_loads = defaultdict(lambda: {'group1': 0, 'group2': 0, 'group3': 0})
