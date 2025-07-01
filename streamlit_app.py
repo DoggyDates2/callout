@@ -15,6 +15,20 @@ PLACEMENT_GOAL_DISTANCE = 0.5
 url_map = "https://docs.google.com/spreadsheets/d/1mg8d5CLxSR54KhNUL8SpL5jzrGN-bghTsC9vxSK8lR0/export?format=csv&gid=267803750"
 url_matrix = "https://docs.google.com/spreadsheets/d/1421xCS86YH6hx0RcuZCyXkyBK_xl-VDSlXyDNvw09Pg/export?format=csv&gid=398422902"
 
+def get_reassignment_priority(dog_data):
+    """Calculate priority for dog reassignment. Lower number = higher priority."""
+    num_dogs = dog_data['dog_info']['num_dogs']
+    num_groups = len(dog_data['original_groups'])
+    
+    if num_dogs == 1 and num_groups == 1:
+        return 1  # Highest priority - easiest to place
+    elif num_dogs == 1 and num_groups > 1:
+        return 2  # Single dog but multiple groups
+    elif num_dogs > 1 and num_groups == 1:
+        return 3  # Multiple dogs but single group
+    else:  # num_dogs > 1 and num_groups > 1
+        return 4  # Lowest priority - hardest to place
+
 @st.cache_data
 def load_csv(url):
     return pd.read_csv(url, dtype=str)
@@ -116,6 +130,10 @@ if st.button("Reassign Dogs"):
                 'original_groups': info['groups'],
                 'dog_info': info
             })
+
+    # Sort dogs by priority (easiest assignments first)
+    dogs_to_reassign.sort(key=get_reassignment_priority)
+    st.info(f"🎯 Processing {len(dogs_to_reassign)} dogs in priority order (single dog/group first)")
 
     driver_loads = defaultdict(lambda: {'group1': 0, 'group2': 0, 'group3': 0})
     for dog_id, info in dogs_going_today.items():
@@ -237,4 +255,3 @@ if st.button("Reassign Dogs"):
     result_df = pd.DataFrame(assignments)[["Dog ID", "New Assignment", "Distance"]]
     st.success("✅ Final Reassignments")
     st.dataframe(result_df)
-
