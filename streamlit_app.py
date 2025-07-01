@@ -577,20 +577,46 @@ with st.expander("🔧 Data Source Status"):
     with col2:
         if st.button("🧪 Test Geocodes Sheet"):
             try:
+                # Show the actual URL being tested
+                st.write(f"**Testing URL:** {url_geocodes}")
                 test_df = pd.read_csv(url_geocodes, nrows=5)
                 st.success("✅ Geocodes sheet works!")
                 st.dataframe(test_df.head(3))
                 st.info(f"Columns: {list(test_df.columns)}")
             except Exception as e:
                 st.error(f"❌ Geocodes failed: {e}")
-                st.write("**Let's try alternative URLs:**")
+                st.write("**Current URL being used:**")
+                st.code(url_geocodes)
                 
-                # Try alternative formats
-                alt_url1 = url_geocodes.replace("pub?output=csv", "pub?gid=0&single=true&output=csv")
+                st.write("**Let's try alternative approaches:**")
+                
+                # Alternative 1: Try with gid parameter
+                alt_url1 = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQf3D748U4x_SwynVVCR68kuQSB-kKFx80vOZylLm6bJ0CntSUDL1FjPnwXQqQsTRKWanorkConCtnK/pub?gid=0&single=true&output=csv"
+                
+                # Alternative 2: Try the original export format
                 alt_url2 = "https://docs.google.com/spreadsheets/d/1SuvioVrk1aRwXQpPdYxNnzvyCsb4Opquq-9WSiASvi0/export?format=csv&gid=0"
                 
-                st.code(f"Alt 1: {alt_url1}")
-                st.code(f"Alt 2: {alt_url2}")
+                st.write("**Alternative 1 (with gid):**")
+                st.code(alt_url1)
+                
+                st.write("**Alternative 2 (export format):**")
+                st.code(alt_url2)
+                
+                if st.button("🧪 Test Alternative 1"):
+                    try:
+                        test_alt1 = pd.read_csv(alt_url1, nrows=3)
+                        st.success("✅ Alternative 1 works!")
+                        st.info("Copy this URL to replace url_geocodes in the code")
+                    except Exception as e2:
+                        st.error(f"❌ Alternative 1 failed: {e2}")
+                
+                if st.button("🧪 Test Alternative 2"):
+                    try:
+                        test_alt2 = pd.read_csv(alt_url2, nrows=3)
+                        st.success("✅ Alternative 2 works!")
+                        st.info("Copy this URL to replace url_geocodes in the code")
+                    except Exception as e3:
+                        st.error(f"❌ Alternative 2 failed: {e3}")
     
     # Temporary disable option
     st.write("---")
