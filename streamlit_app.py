@@ -648,7 +648,8 @@ if st.button("🗺️ Generate Interactive Map"):
     st.write("🔄 Step 2: Creating map...")
     with st.spinner("Creating map using geocoded locations..."):
         try:
-            assignment_map = create_assignment_map(dogs_going_today, assignments, geocodes_dict)
+            # FIXED: Unpack the tuple returned by create_assignment_map
+            assignment_map, driver_loads = create_assignment_map(dogs_going_today, assignments, geocodes_dict)
             st.write("✅ Step 2 complete: Map created successfully")
             
             st.write("🔄 Step 3: Displaying map...")
