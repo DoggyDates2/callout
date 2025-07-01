@@ -19,7 +19,6 @@ MAX_REASSIGNMENT_DISTANCE = 5.0  # Maximum distance for any reassignment
 
 url_map = "https://docs.google.com/spreadsheets/d/1mg8d5CLxSR54KhNUL8SpL5jzrGN-bghTsC9vxSK8lR0/export?format=csv&gid=267803750"
 url_matrix = "https://docs.google.com/spreadsheets/d/1421xCS86YH6hx0RcuZCyXkyBK_xl-VDSlXyDNvw09Pg/export?format=csv&gid=398422902"
-
 url_geocodes = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQf3D748U4x_SwynVVCR68kuQSB-kKFx80vOZylLm6bJ0CntSUDL1FjPnwXQqQsTRKWanorkConCtnK/pub?output=csv"
 
 def get_reassignment_priority(dog_data):
@@ -159,9 +158,8 @@ def get_driver_color_name(driver_name):
     driver_hash = hash(driver_name) % len(colors)
     return colors[driver_hash]
 
-folium_map, driver_loads_data = create_assignment_map(dogs_going_today, assignments, geocodes_dict)
-st_folium(folium_map, width=1000, height=600)
-
+def create_assignment_map(dogs_going_today, assignments, geocodes_dict):
+    """Create the assignment map with driver capacity information"""
     
     # Calculate current driver loads
     driver_loads = defaultdict(lambda: {'group1': 0, 'group2': 0, 'group3': 0})
@@ -195,7 +193,7 @@ st_folium(folium_map, width=1000, height=600)
     driver_colors = {driver: get_driver_color_name(driver) for driver in all_drivers}
     
     # Track reassigned dogs
-    reassigned_dog_ids = set(r['Dog ID'] for r in reassignments) if reassignments else set()
+    reassigned_dog_ids = set(r['Dog ID'] for r in assignments) if assignments else set()
     
     # Add markers for each dog
     from_cache = 0
@@ -811,24 +809,12 @@ if st.button("🗺️ Generate Interactive Map"):
     st.write("🔄 Step 2: Creating map...")
     with st.spinner("Creating map using geocoded locations..."):
         try:
-            # Get the map and driver loads separately
-            result = create_assignment_map(dogs_going_today, assignments, geocodes_dict)
-            folium_map = result[0]  # The folium map object
-            driver_loads_data = result[1]  # The driver loads data
+            # Get the map and driver loads from the function
+            folium_map, driver_loads_data = create_assignment_map(dogs_going_today, assignments, geocodes_dict)
             st.write("✅ Step 2 complete: Map created successfully")
             
             st.write("🔄 Step 3: Displaying map...")
-            # DEBUG: Check what we actually have
-            st.write(f"🔍 DEBUG: folium_map type = {type(folium_map)}")
-            st.write(f"🔍 DEBUG: Is it a tuple? {isinstance(folium_map, tuple)}")
-            if isinstance(folium_map, tuple):
-                st.error(f"🚨 folium_map is still a tuple with {len(folium_map)} items!")
-                st.write(f"First item type: {type(folium_map[0])}")
-                # Try using the first item if it's a tuple
-                actual_map = folium_map[0]
-                st_folium(actual_map, width=1000, height=600)
-            else:
-                st_folium(folium_map, width=1000, height=600)
+            st_folium(folium_map, width=1000, height=600)
             st.write("✅ Step 3 complete: Map displayed")
             
         except Exception as e:
