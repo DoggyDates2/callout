@@ -536,19 +536,38 @@ st.subheader("🗺️ Assignment Map")
 st.info("📍 Hover for Driver:Groups (used/capacity) | Click markers for full capacity details | Colors = Different drivers")
 
 # Quick geocodes troubleshooting
-with st.expander("🔧 Geocodes Status"):
-    st.write("**Using published geocodes sheet (most reliable!):**")
-    st.code(url_geocodes)
+with st.expander("🔧 Data Source Status"):
+    st.success("🚀 **ALL SHEETS NOW USING PUBLISHED URLs** (Most Reliable!)")
     
-    if st.button("🧪 Test Published Geocodes URL"):
+    st.write("**📋 Main Assignments Sheet (Published):**")
+    st.code(url_map, language="text")
+    
+    st.write("**📊 Distance Matrix Sheet (Published):**") 
+    st.code(url_matrix, language="text")
+    
+    st.write("**📍 Geocodes Sheet (Published):**")
+    st.code(url_geocodes, language="text")
+    
+    if st.button("🧪 Test All Published URLs"):
         try:
-            test_df = pd.read_csv(url_geocodes, nrows=5)
-            st.success("✅ Published sheet works! Sample data:")
-            st.dataframe(test_df)
-            st.info(f"📊 Expected format: Dog ID, LATITUDE, LONGITUDE columns")
+            # Test main sheet
+            test_map = pd.read_csv(url_map, nrows=3)
+            st.success("✅ Main assignments sheet works!")
+            
+            # Test matrix  
+            test_matrix = pd.read_csv(url_matrix, nrows=3)
+            st.success("✅ Distance matrix sheet works!")
+            
+            # Test geocodes
+            test_geocodes = pd.read_csv(url_geocodes, nrows=3)
+            st.success("✅ Geocodes sheet works!")
+            
+            st.info("🎉 **All published URLs working perfectly!**")
+            
         except Exception as e:
-            st.error(f"❌ Published sheet failed: {e}")
-            st.info("💡 Published URLs are usually much more reliable than export URLs")
+            st.error(f"❌ URL test failed: {e}")
+    
+    st.info("💡 **Benefits**: No permission issues, faster loading, bulletproof reliability!")
 
 if st.button("🗺️ Generate Interactive Map"):
     # Load geocodes from Google Sheets
