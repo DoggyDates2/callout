@@ -6,7 +6,6 @@ import folium
 from streamlit_folium import st_folium
 import requests
 import time
-import hashlib
 
 st.set_page_config(page_title="Dog Reassignment System", layout="wide")
 st.title("🐶 Dog Reassignment System")
@@ -19,6 +18,7 @@ PLACEMENT_GOAL_DISTANCE = 0.5
 
 url_map = "https://docs.google.com/spreadsheets/d/1mg8d5CLxSR54KhNUL8SpL5jzrGN-bghTsC9vxSK8lR0/export?format=csv&gid=267803750"
 url_matrix = "https://docs.google.com/spreadsheets/d/1421xCS86YH6hx0RcuZCyXkyBK_xl-VDSlXyDNvw09Pg/export?format=csv&gid=398422902"
+url_addresses = "https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/export?format=csv&gid=YOUR_GID"  # Add your address cache sheet URL here
 
 def get_reassignment_priority(dog_data):
     """Calculate priority for dog reassignment. Lower number = higher priority."""
@@ -39,18 +39,51 @@ def load_csv(url):
     return pd.read_csv(url, dtype=str)
 
 @st.cache_data
-def geocode_address(address):
-    """Geocode an address using Nominatim (free geocoding service)"""
+def load_address_cache():
+    """Load cached coordinates from Google Sheets"""
+    try:
+        # Load from your address cache Google Sheet
+        cache_df = pd.read_csv(url_addresses, dtype=str)
+        cache_dict = {}
+        
+        for _, row in cache_df.iterrows():
+            address = str(row.get('address', '')).lower().strip()
+            try:
+                lat = float(row.get('lat', 0))
+                lon = float(row.get('lon', 0))
+                if address and lat != 0 and lon != 0:
+                    cache_dict[address] = {'lat': lat, 'lon': lon}
+            except (ValueError, TypeError):
+                continue
+        
+        st.info(f"📍 Loaded {len(cache_dict)} cached addresses from Google Sheets")
+        return cache_dict
+        
+    except Exception as e:
+        st.warning(f"⚠️ Could not load address cache: {e}")
+        st.info("💡 Create a Google Sheet with columns: address, lat, lon")
+        return {}
+
+def save_to_address_cache(address, lat, lon, cache_dict):
+    """Save new coordinates to cache (in memory for now)"""
+    cache_dict[address.lower().strip()] = {'lat': lat, 'lon': lon}
+    return cache_dict
+
+@st.cache_data
+def geocode_address_with_cache(address, _cache_dict=None):
+    """Geocode an address using cache first, then Nominatim if needed"""
     if not address or address.strip() == "":
-        return None, None
+        return None, None, False  # lat, lon, was_geocoded
+    
+    clean_address = address.strip()
+    cache_key = clean_address.lower()
+    
+    # Check cache first
+    if _cache_dict and cache_key in _cache_dict:
+        cached = _cache_dict[cache_key]
+        return cached['lat'], cached['lon'], False
     
     try:
-        # Clean the address
-        clean_address = address.strip()
-        
-        # Create a cache key for this address
-        cache_key = hashlib.md5(clean_address.encode()).hexdigest()
-        
         # Use Nominatim (OpenStreetMap's free geocoding service)
         url = f"https://nominatim.openstreetmap.org/search"
         params = {
@@ -71,13 +104,18 @@ def geocode_address(address):
             if data:
                 lat = float(data[0]['lat'])
                 lon = float(data[0]['lon'])
-                return lat, lon
+                
+                # Save to cache
+                if _cache_dict is not None:
+                    _cache_dict[cache_key] = {'lat': lat, 'lon': lon}
+                
+                return lat, lon, True  # True = was geocoded
         
-        return None, None
+        return None, None, False
         
     except Exception as e:
         st.warning(f"Could not geocode address: {address} - {e}")
-        return None, None
+        return None, None, False
 
 def get_driver_color(driver_name):
     """Get a consistent color for each driver"""
@@ -92,7 +130,7 @@ def get_driver_color(driver_name):
     driver_hash = hash(driver_name) % len(colors)
     return colors[driver_hash]
 
-def create_assignment_map(dogs_going_today, reassignments):
+def create_assignment_map(dogs_going_today, reassignments, address_cache=None):
     """Create an interactive map showing dog assignments"""
     
     # Create a map centered on a reasonable location (you may want to adjust this)
@@ -105,9 +143,15 @@ def create_assignment_map(dogs_going_today, reassignments):
     # Track reassigned dogs
     reassigned_dog_ids = set(r['Dog ID'] for r in reassignments) if reassignments else set()
     
+    # Initialize cache if not provided
+    if address_cache is None:
+        address_cache = {}
+    
     # Add markers for each dog
     geocoded_count = 0
     failed_geocode = 0
+    from_cache = 0
+    newly_geocoded = 0
     
     progress_bar = st.progress(0)
     status_text = st.empty()
@@ -118,16 +162,22 @@ def create_assignment_map(dogs_going_today, reassignments):
         # Update progress
         progress = (idx + 1) / total_dogs
         progress_bar.progress(progress)
-        status_text.text(f"Geocoding addresses... {idx + 1}/{total_dogs}")
+        status_text.text(f"Mapping addresses... {idx + 1}/{total_dogs} (Cache: {from_cache}, New: {newly_geocoded})")
         
         # Get coordinates
-        lat, lon = geocode_address(dog_info.get('address', ''))
+        lat, lon, was_geocoded = geocode_address_with_cache(dog_info.get('address', ''), address_cache)
         
         if lat is None or lon is None:
             failed_geocode += 1
             continue
         
         geocoded_count += 1
+        if was_geocoded:
+            newly_geocoded += 1
+            # Rate limiting for new geocoding
+            time.sleep(0.1)
+        else:
+            from_cache += 1
         
         # Determine marker style
         driver = dog_info['driver']
@@ -162,13 +212,9 @@ def create_assignment_map(dogs_going_today, reassignments):
             tooltip=f"{dog_info.get('dog_name', dog_id)} - {driver}",
             icon=icon
         ).add_to(m)
-        
-        # Rate limiting for geocoding
-        if idx % 10 == 0:  # Pause every 10 requests
-            time.sleep(0.1)
     
     progress_bar.progress(1.0)
-    status_text.text(f"Map complete! Geocoded {geocoded_count} addresses, {failed_geocode} failed")
+    status_text.text(f"Map complete! Total: {geocoded_count}, From cache: {from_cache}, Newly geocoded: {newly_geocoded}, Failed: {failed_geocode}")
     
     # Add legend
     legend_html = """
@@ -184,7 +230,7 @@ def create_assignment_map(dogs_going_today, reassignments):
     """
     m.get_root().html.add_child(folium.Element(legend_html))
     
-    return m
+    return m, address_cache
 
 def generate_radius_steps(start=0.25, max_radius=2.2, step=0.25):
     current = start
@@ -278,11 +324,32 @@ for driver, callouts in driver_callouts.items():
 if not callout_found:
     st.success("✅ No drivers calling out today!")
 
-# Auto-run reassignment if there are callouts
+# Manual callout override section
+st.subheader("🔧 Manual Callout Override (Testing)")
+st.info("💡 Use this to test 'what if' scenarios or handle last-minute callouts")
+
+selected_driver = st.selectbox("Driver to call out", ["None"] + sorted(set(info['driver'] for info in dogs_going_today.values())))
+selected_groups = st.multiselect("Groups affected", [1, 2, 3], default=[])
+
+# Process reassignments
 assignments = []
-if callout_found:
+process_reassignments = False
+
+# Check if manual override is being used
+if selected_driver != "None" and selected_groups and st.button("🚀 Run Manual Callout Reassignment"):
+    st.subheader("🔄 Processing Manual Callout Reassignment")
+    # Apply manual callout override
+    for g in selected_groups:
+        driver_callouts[selected_driver][f"group{g}"] = True
+    process_reassignments = True
+    st.warning(f"🔧 Manual override: {selected_driver} calling out Groups {selected_groups}")
+
+# Auto-run reassignment if there are callouts from Google Sheets
+elif callout_found:
     st.subheader("🔄 Processing Automatic Reassignments")
-    
+    process_reassignments = True
+
+if process_reassignments:
     dogs_to_reassign = []
     for dog_id, info in dogs_going_today.items():
         driver = info["driver"]
@@ -370,15 +437,50 @@ if callout_found:
             st.dataframe(result_df)
         else:
             st.info("ℹ️ No reassignments could be made with current constraints")
+    else:
+        st.info("ℹ️ No dogs need reassignment")
 
 # Create and display the map
 st.subheader("🗺️ Assignment Map")
 st.info("📍 Blue paw = Original assignment | 🔄 Red refresh = Reassigned dog | Colors = Different drivers")
 
 if st.button("🗺️ Generate Interactive Map"):
+    # Load address cache from Google Sheets
+    address_cache = load_address_cache()
+    
     with st.spinner("Creating map and geocoding addresses..."):
-        assignment_map = create_assignment_map(dogs_going_today, assignments)
+        assignment_map, updated_cache = create_assignment_map(dogs_going_today, assignments, address_cache)
         st_folium(assignment_map, width=1000, height=600)
+        
+        # Show stats about cache usage
+        if len(updated_cache) > len(address_cache):
+            new_addresses = len(updated_cache) - len(address_cache)
+            st.success(f"🎉 Found {new_addresses} new addresses that could be added to your cache!")
+            
+            # Show new addresses that could be cached
+            with st.expander("🔍 New addresses found (add these to your Google Sheet)"):
+                new_data = []
+                for address, coords in updated_cache.items():
+                    if address not in address_cache:
+                        new_data.append({
+                            'address': address,
+                            'lat': coords['lat'],
+                            'lon': coords['lon']
+                        })
+                
+                if new_data:
+                    new_df = pd.DataFrame(new_data)
+                    st.dataframe(new_df)
+                    
+                    # Provide CSV download for easy copying to Google Sheets
+                    csv_data = new_df.to_csv(index=False)
+                    st.download_button(
+                        label="💾 Download New Addresses CSV",
+                        data=csv_data,
+                        file_name="new_addresses.csv",
+                        mime="text/csv",
+                        help="Download and copy these to your address cache Google Sheet"
+                    )
 
 # Summary statistics
 st.subheader("📊 Summary")
