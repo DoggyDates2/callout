@@ -810,16 +810,18 @@ if st.button("🗺️ Generate Interactive Map"):
     st.write("🔄 Step 2: Creating map...")
     with st.spinner("Creating map using geocoded locations..."):
         try:
-            # FIXED: Unpack the tuple returned by create_assignment_map
-            assignment_map, driver_loads = create_assignment_map(dogs_going_today, assignments, geocodes_dict)
+            # Get the map and driver loads separately
+            result = create_assignment_map(dogs_going_today, assignments, geocodes_dict)
+            folium_map = result[0]  # The folium map object
+            driver_loads_data = result[1]  # The driver loads data
             st.write("✅ Step 2 complete: Map created successfully")
             
             st.write("🔄 Step 3: Displaying map...")
-            st_folium(assignment_map, width=1000, height=600)
+            st_folium(folium_map, width=1000, height=600)
             st.write("✅ Step 3 complete: Map displayed")
             
         except Exception as e:
-            st.error(f"❌ Map creation failed at step 2: {e}")
+            st.error(f"❌ Map creation failed: {e}")
             st.error(f"Error type: {type(e).__name__}")
             import traceback
             st.error(f"Full traceback: {traceback.format_exc()}")
