@@ -42,6 +42,10 @@ def load_csv(url):
 @st.cache_data
 def load_geocodes():
     """Load geocodes from Google Sheets by Dog ID"""
+    if not USE_GEOCODES:
+        st.info("🔄 Geocodes disabled - using address geocoding only")
+        return {}
+        
     try:
         # Load from your geocodes Google Sheet tab
         geocodes_df = pd.read_csv(url_geocodes, dtype=str)
@@ -248,11 +252,14 @@ def create_assignment_map(dogs_going_today, reassignments, geocodes_dict):
         </div>
         """
         
+        # Create tooltip with driver:groups format
+        tooltip_text = f"{driver}:{groups_str}"
+        
         # Add marker to map
         folium.Marker(
             location=[lat, lon],
             popup=folium.Popup(popup_text, max_width=300),
-            tooltip=f"{dog_info.get('dog_name', dog_id)} - {driver}",
+            tooltip=tooltip_text,
             icon=icon
         ).add_to(m)
     
@@ -529,7 +536,24 @@ if process_reassignments:
 
 # Create and display the map
 st.subheader("🗺️ Assignment Map")
-st.info("📍 Blue paw = Original assignment | 🔄 Red refresh = Reassigned dog | Colors = Different drivers")
+st.info("📍 Hover over markers to see Driver:Groups | Click for full details | Colors = Different drivers")
+
+# Quick geocodes troubleshooting
+with st.expander("🔧 Geocodes Troubleshooting"):
+    st.write("**Current geocodes URL:**")
+    st.code(url_geocodes)
+    
+    if st.button("🧪 Test Geocodes URL"):
+        try:
+            test_df = pd.read_csv(url_geocodes, nrows=5)
+            st.success("✅ URL works! Sample data:")
+            st.dataframe(test_df)
+        except Exception as e:
+            st.error(f"❌ URL failed: {e}")
+            st.info("💡 Try setting USE_GEOCODES = False at the top of the code for now")
+    
+    st.write("**Quick fix if geocodes keep failing:**")
+    st.code("USE_GEOCODES = False  # Add this near the top of the code")
 
 if st.button("🗺️ Generate Interactive Map"):
     # Load geocodes from Google Sheets
