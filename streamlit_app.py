@@ -12,9 +12,83 @@ MAX_REASSIGNMENT_DISTANCE = 5.0
 url_map = "https://docs.google.com/spreadsheets/d/1mg8d5CLxSR54KhNUL8SpL5jzrGN-bghTsC9vxSK8lR0/export?format=csv&gid=267803750"
 url_matrix = "https://docs.google.com/spreadsheets/d/1421xCS86YH6hx0RcuZCyXkyBK_xl-VDSlXyDNvw09Pg/export?format=csv&gid=398422902"
 
-@st.cache_data
+@st.cache_data(ttl=300)  # Cache for 5 minutes
 def load_csv(url):
     return pd.read_csv(url, dtype=str)
+
+@st.cache_data(ttl=300)  # Cache for 5 minutes
+def process_dogs_data(map_df):
+    """Process dogs data - cached for performance"""
+    dogs_going_today = {}
+    
+    for _, row in map_df.iterrows():
+        dog_id = row.get("Dog ID", "").strip()
+        driver = row.get("Name", "").strip()
+        group_str = row.get("Group", "").strip()
+        try:
+            num_dogs = int(float(row.get("Number of dogs", "1")))
+        except:
+            num_dogs = 1
+        if dog_id and driver and group_str:
+            dogs_going_today[dog_id] = {
+                'assignment': f"{driver}:{group_str}",
+                'num_dogs': num_dogs,
+                'driver': driver,
+                'groups': get_groups(group_str),
+                'address': row.get("Address", ""),
+                'dog_name': row.get("Dog Name", "")
+            }
+    
+    return dogs_going_today
+
+@st.cache_data(ttl=300)  # Cache for 5 minutes
+def process_driver_data(map_df):
+    """Process driver data - cached for performance"""
+    driver_capacities = {}
+    driver_callouts = {}
+    
+    for _, row in map_df.iterrows():
+        drv = str(row.get("Driver", "")).strip()
+        if not drv or drv in driver_capacities:
+            continue
+        g1 = parse_cap(row.get("Group 1", ""))
+        g2 = parse_cap(row.get("Group 2", ""))
+        g3 = parse_cap(row.get("Group 3", ""))
+        driver_capacities[drv] = {'group1': g1, 'group2': g2, 'group3': g3}
+        driver_callouts[drv] = {
+            'group1': str(row.get("Group 1", "")).strip().upper() == "X",
+            'group2': str(row.get("Group 2", "")).strip().upper() == "X",
+            'group3': str(row.get("Group 3", "")).strip().upper() == "X"
+        }
+    
+    return driver_capacities, driver_callouts
+
+@st.cache_data(ttl=300)  # Cache for 5 minutes - This is the BIG performance fix
+def build_distance_matrix(matrix_df):
+    """Build distance matrix - HEAVILY CACHED for performance"""
+    distance_matrix = {}
+    dog_ids = matrix_df.columns[1:]
+    
+    # Progress for large datasets
+    total_rows = len(matrix_df)
+    if total_rows > 100:
+        st.info(f"🔄 Processing {total_rows} rows in distance matrix... (this will be cached)")
+    
+    for i, row in matrix_df.iterrows():
+        row_id = str(row.iloc[0]).strip()
+        distance_matrix[row_id] = {}
+        for j, col_id in enumerate(dog_ids):
+            try:
+                val = float(row.iloc[j + 1])
+            except:
+                val = 0.0
+            distance_matrix[row_id][str(col_id).strip()] = val
+        
+        # Progress for large files
+        if total_rows > 500 and i % 200 == 0:
+            st.write(f"  ⏳ Processed {i}/{total_rows} rows...")
+    
+    return distance_matrix
 
 def get_reassignment_priority(dog_data):
     """Calculate priority for dog reassignment. Lower number = higher priority."""
@@ -43,67 +117,40 @@ def get_groups(group_str):
     group_str = group_str.replace("LM", "")
     return sorted(set(int(g) for g in re.findall(r'\d', group_str)))
 
-# Load and process data
+# Load and process data with performance monitoring
 with st.spinner("📊 Loading data from Google Sheets..."):
+    import time
+    start_time = time.time()
+    
+    # Load raw data
     map_df = load_csv(url_map)
     matrix_df = load_csv(url_matrix)
+    
+    load_time = time.time() - start_time
+    st.success(f"✅ Data loaded in {load_time:.1f} seconds!")
 
-st.success("✅ Data loaded successfully!")
+# Process data with caching
+with st.spinner("🔄 Processing data..."):
+    start_time = time.time()
+    
+    # Clean data
+    map_df["Dog ID"] = map_df["Dog ID"].astype(str).str.strip()
+    map_df["Name"] = map_df["Name"].astype(str).str.strip()
+    map_df["Group"] = map_df["Group"].astype(str).str.strip()
+    
+    # Process with cached functions
+    dogs_going_today = process_dogs_data(map_df)
+    driver_capacities, driver_callouts = process_driver_data(map_df)
+    
+    process_time = time.time() - start_time
+    st.success(f"✅ Data processing complete in {process_time:.1f} seconds!")
 
-# Clean data
-map_df["Dog ID"] = map_df["Dog ID"].astype(str).str.strip()
-map_df["Name"] = map_df["Name"].astype(str).str.strip()
-map_df["Group"] = map_df["Group"].astype(str).str.strip()
-
-# Build dogs_going_today dictionary
-dogs_going_today = {}
-for _, row in map_df.iterrows():
-    dog_id = row.get("Dog ID", "").strip()
-    driver = row.get("Name", "").strip()
-    group_str = row.get("Group", "").strip()
-    try:
-        num_dogs = int(float(row.get("Number of dogs", "1")))
-    except:
-        num_dogs = 1
-    if dog_id and driver and group_str:
-        dogs_going_today[dog_id] = {
-            'assignment': f"{driver}:{group_str}",
-            'num_dogs': num_dogs,
-            'driver': driver,
-            'groups': get_groups(group_str),
-            'address': row.get("Address", ""),
-            'dog_name': row.get("Dog Name", "")
-        }
-
-# Build driver data
-driver_capacities = {}
-driver_callouts = {}
-for _, row in map_df.iterrows():
-    drv = str(row.get("Driver", "")).strip()
-    if not drv or drv in driver_capacities:
-        continue
-    g1 = parse_cap(row.get("Group 1", ""))
-    g2 = parse_cap(row.get("Group 2", ""))
-    g3 = parse_cap(row.get("Group 3", ""))
-    driver_capacities[drv] = {'group1': g1, 'group2': g2, 'group3': g3}
-    driver_callouts[drv] = {
-        'group1': str(row.get("Group 1", "")).strip().upper() == "X",
-        'group2': str(row.get("Group 2", "")).strip().upper() == "X",
-        'group3': str(row.get("Group 3", "")).strip().upper() == "X"
-    }
-
-# Build distance matrix
-distance_matrix = {}
-dog_ids = matrix_df.columns[1:]
-for i, row in matrix_df.iterrows():
-    row_id = str(row.iloc[0]).strip()
-    distance_matrix[row_id] = {}
-    for j, col_id in enumerate(dog_ids):
-        try:
-            val = float(row.iloc[j + 1])
-        except:
-            val = 0.0
-        distance_matrix[row_id][str(col_id).strip()] = val
+# Build distance matrix (this is the slow part)
+with st.spinner("🗺️ Building distance matrix (cached)..."):
+    start_time = time.time()
+    distance_matrix = build_distance_matrix(matrix_df)
+    matrix_time = time.time() - start_time
+    st.success(f"✅ Distance matrix ready in {matrix_time:.1f} seconds!")
 
 # Current status summary
 st.subheader("📊 Current Status")
@@ -141,7 +188,9 @@ st.subheader("🔧 Manual Callout Override")
 col1, col2 = st.columns(2)
 
 with col1:
-    selected_driver = st.selectbox("Driver to call out", ["None"] + sorted(set(info['driver'] for info in dogs_going_today.values())))
+    # This should now be fast since all data is processed and cached
+    driver_list = sorted(set(info['driver'] for info in dogs_going_today.values()))
+    selected_driver = st.selectbox("Driver to call out", ["None"] + driver_list)
 
 with col2:
     selected_groups = st.multiselect("Groups affected", [1, 2, 3], default=[])
@@ -200,6 +249,7 @@ if process_reassignments:
         status_text = st.empty()
 
         # Process each dog
+        start_time = time.time()
         for idx, dog in enumerate(dogs_to_reassign):
             progress = (idx + 1) / len(dogs_to_reassign)
             progress_bar.progress(progress)
@@ -264,8 +314,9 @@ if process_reassignments:
                     "Match Type": "Exact" if best_dist <= 3.0 else "Adjacent"
                 })
 
+        processing_time = time.time() - start_time
         progress_bar.progress(1.0)
-        status_text.text("✅ Reassignment processing complete!")
+        status_text.text(f"✅ Reassignment processing complete in {processing_time:.1f} seconds!")
 
         # Show results
         if assignments:
@@ -321,10 +372,21 @@ if st.button("📊 Show Current Driver Loads"):
         st.error("🚨 Overloaded drivers detected!")
         st.dataframe(overloaded, use_container_width=True)
 
+# Performance info
+with st.expander("⚡ Performance Info"):
+    st.write("**🚀 Performance Optimizations Applied:**")
+    st.write("✅ Heavy data processing cached for 5 minutes")
+    st.write("✅ Distance matrix cached (biggest performance boost)")
+    st.write("✅ Google Sheets data cached")
+    st.write("✅ Processing times displayed for monitoring")
+    st.write("")
+    st.write("**💡 First load may be slow, subsequent loads should be fast!**")
+    st.write("**🔄 Cache refreshes every 5 minutes for fresh data**")
+
 # Quick stats
 with st.expander("📋 Quick Data Summary"):
     st.write(f"**Dogs in system:** {len(dogs_going_today)}")
     st.write(f"**Active drivers:** {len(driver_capacities)}")
-    st.write(f"**Distance matrix size:** {len(distance_matrix)} x {len(dog_ids)}")
+    st.write(f"**Distance matrix size:** {len(distance_matrix)} x {len(matrix_df.columns)-1}")
     st.write(f"**Total driver capacity:** {sum(sum(cap.values()) for cap in driver_capacities.values())}")
     st.write(f"**Current callouts:** {callout_count}")
