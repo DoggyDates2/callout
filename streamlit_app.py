@@ -537,18 +537,18 @@ st.info("📍 Hover for Driver:Groups (used/capacity) | Click markers for full c
 
 # Quick geocodes troubleshooting
 with st.expander("🔧 Geocodes Status"):
-    st.write("**Using dedicated geocodes sheet (fast!):**")
+    st.write("**Using published geocodes sheet (most reliable!):**")
     st.code(url_geocodes)
     
-    if st.button("🧪 Test New Geocodes Sheet"):
+    if st.button("🧪 Test Published Geocodes URL"):
         try:
             test_df = pd.read_csv(url_geocodes, nrows=5)
-            st.success("✅ Dedicated sheet works! Sample data:")
+            st.success("✅ Published sheet works! Sample data:")
             st.dataframe(test_df)
             st.info(f"📊 Expected format: Dog ID, LATITUDE, LONGITUDE columns")
         except Exception as e:
-            st.error(f"❌ New sheet failed: {e}")
-            st.info("💡 Check that the sheet is shared as 'Anyone with link can view'")
+            st.error(f"❌ Published sheet failed: {e}")
+            st.info("💡 Published URLs are usually much more reliable than export URLs")
 
 if st.button("🗺️ Generate Interactive Map"):
     # Load geocodes from Google Sheets
