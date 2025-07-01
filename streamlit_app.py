@@ -18,7 +18,7 @@ PLACEMENT_GOAL_DISTANCE = 0.5
 
 url_map = "https://docs.google.com/spreadsheets/d/1mg8d5CLxSR54KhNUL8SpL5jzrGN-bghTsC9vxSK8lR0/export?format=csv&gid=267803750"
 url_matrix = "https://docs.google.com/spreadsheets/d/1421xCS86YH6hx0RcuZCyXkyBK_xl-VDSlXyDNvw09Pg/export?format=csv&gid=398422902"
-url_geocodes = "https://docs.google.com/spreadsheets/d/1mg8d5CLxSR54KhNUL8SpL5jzrGN-bghTsC9vxSK8lR0/export?format=csv&gid=101453373"  # Add your geocodes tab GID here
+url_geocodes = "https://docs.google.com/spreadsheets/d/1mg8d5CLxSR54KhNUL8SpL5jzrGN-bghTsC9vxSK8lR0/export?format=csv&gid=YOUR_GEOCODES_GID"  # Add your geocodes tab GID here
 
 def get_reassignment_priority(dog_data):
     """Calculate priority for dog reassignment. Lower number = higher priority."""
@@ -49,14 +49,27 @@ def load_geocodes():
         for _, row in geocodes_df.iterrows():
             dog_id = str(row.get('Dog ID', '')).strip()
             try:
-                lat = float(row.get('LATTITUDE', 0))
-                lon = float(row.get('LONGITUDE', 0))
-                if dog_id and lat != 0 and lon != 0:
+                lat_val = row.get('LATTITUDE', '')
+                lon_val = row.get('LONGITUDE', '')
+                
+                # Skip if values are empty, NaN, or invalid
+                if pd.isna(lat_val) or pd.isna(lon_val) or lat_val == '' or lon_val == '':
+                    continue
+                
+                lat = float(lat_val)
+                lon = float(lon_val)
+                
+                # Skip if coordinates are invalid (0,0 or NaN)
+                if pd.isna(lat) or pd.isna(lon) or (lat == 0 and lon == 0):
+                    continue
+                    
+                if dog_id:
                     geocodes_dict[dog_id] = {'lat': lat, 'lon': lon}
+                    
             except (ValueError, TypeError):
                 continue
         
-        st.info(f"📍 Loaded {len(geocodes_dict)} geocoded locations from Google Sheets")
+        st.info(f"📍 Loaded {len(geocodes_dict)} valid geocoded locations from Google Sheets")
         return geocodes_dict
         
     except Exception as e:
@@ -69,13 +82,17 @@ def get_coordinates_for_dog(dog_id, dog_info, geocodes_dict):
     # Try Dog ID lookup first (fast and reliable)
     if dog_id in geocodes_dict:
         coords = geocodes_dict[dog_id]
-        return coords['lat'], coords['lon'], "cached"
+        lat, lon = coords['lat'], coords['lon']
+        
+        # Double-check for valid coordinates
+        if pd.notna(lat) and pd.notna(lon) and lat != 0 and lon != 0:
+            return lat, lon, "cached"
     
     # Fallback to address geocoding for missing Dog IDs
     address = dog_info.get('address', '')
     if address and address.strip():
         lat, lon, was_geocoded = geocode_address_with_cache(address, {})
-        if lat is not None and lon is not None:
+        if lat is not None and lon is not None and pd.notna(lat) and pd.notna(lon):
             return lat, lon, "geocoded" if was_geocoded else "failed"
     
     return None, None, "no_location"
@@ -166,7 +183,8 @@ def create_assignment_map(dogs_going_today, reassignments, geocodes_dict):
         # Get coordinates using Dog ID lookup first
         lat, lon, source = get_coordinates_for_dog(dog_id, dog_info, geocodes_dict)
         
-        if lat is None or lon is None:
+        # Final validation before creating marker
+        if lat is None or lon is None or pd.isna(lat) or pd.isna(lon):
             failed_geocode += 1
             continue
         
