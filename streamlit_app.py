@@ -58,7 +58,7 @@ def process_dogs_data(map_df):
             delivery_groups = get_delivery_groups(group_str)  # Get only delivery groups (1,2,3)
             
             dogs_going_today[dog_id] = {
-                'assignment': f"{driver}:{group_str}
+                'assignment': f"{driver}:{group_str}",
 
 @st.cache_data(ttl=60)  # 1 MINUTE (callouts change constantly)
 def process_driver_data(map_df):
