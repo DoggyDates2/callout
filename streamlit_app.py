@@ -201,6 +201,7 @@ if not callout_found:
 
 # Manual callout override
 st.subheader("🔧 Manual Callout Override")
+st.info("💡 Defaults to all three groups - adjust if driver is only calling out specific groups")
 col1, col2 = st.columns(2)
 
 with col1:
@@ -209,7 +210,7 @@ with col1:
     selected_driver = st.selectbox("Driver to call out", ["None"] + driver_list)
 
 with col2:
-    selected_groups = st.multiselect("Groups affected", [1, 2, 3], default=[])
+    selected_groups = st.multiselect("Groups affected", [1, 2, 3], default=[1, 2, 3])
 
 # Process reassignments
 assignments = []
@@ -375,17 +376,9 @@ if st.button("📊 Show Current Driver Loads"):
         # Format: "available1, available2, available3"
         availability_display = f"{group1_available}, {group2_available}, {group3_available}"
         
-        # Calculate totals for sorting and utilization
-        total_current = load['group1'] + load['group2'] + load['group3']
-        total_capacity = capacity['group1'] + capacity['group2'] + capacity['group3']
-        total_available = total_capacity - total_current
-        overall_utilization = round((total_current / total_capacity) * 100, 1) if total_capacity > 0 else 0
-        
         capacity_data.append({
             'Driver': driver,
-            'Available Spots (G1, G2, G3)': availability_display,
-            'Total Available': total_available,
-            'Utilization %': overall_utilization
+            'Available Spots (G1, G2, G3)': availability_display
         })
         
         # Track overloaded drivers
@@ -397,8 +390,8 @@ if st.button("📊 Show Current Driver Loads"):
                 'Group 3': f"{load['group3']}/{capacity['group3']} ({group3_available})"
             })
     
-    # Sort by total available spots (most available first)
-    capacity_data.sort(key=lambda x: x['Total Available'], reverse=True)
+    # Sort by driver name alphabetically
+    capacity_data.sort(key=lambda x: x['Driver'])
     
     capacity_df = pd.DataFrame(capacity_data)
     st.dataframe(capacity_df, use_container_width=True)
