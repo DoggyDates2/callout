@@ -54,11 +54,16 @@ def process_dogs_data(map_df):
         except:
             num_dogs = 1
         if dog_id and driver and group_str:
-            all_groups = get_all_groups(group_str)  # Get ALL groups including 0
-            delivery_groups = get_delivery_groups(group_str)  # Get only delivery groups (1,2,3)
-            
             dogs_going_today[dog_id] = {
                 'assignment': f"{driver}:{group_str}",
+                'num_dogs': num_dogs,
+                'driver': driver,
+                'groups': get_groups(group_str),
+                'address': row.get("Address", ""),
+                'dog_name': row.get("Dog Name", "")
+            }
+    
+    return dogs_going_today
 
 @st.cache_data(ttl=60)  # 1 MINUTE (callouts change constantly)
 def process_driver_data(map_df):
@@ -106,23 +111,8 @@ def parse_cap(val):
         return 9
 
 def get_groups(group_str):
-    """Extract valid group numbers (1, 2, 3) from group string. Ignore group 0."""
-    group_str = group_str.replace("LM", "")
-    all_groups = sorted(set(int(g) for g in re.findall(r'\d', group_str)))
-    # Filter out group 0 since it represents start/end location, not a delivery group
-    valid_groups = [g for g in all_groups if g in [1, 2, 3]]
-    return valid_groups
-
-def get_all_groups(group_str):
-    """Get ALL group numbers including 0 - for proximity calculations"""
     group_str = group_str.replace("LM", "")
     return sorted(set(int(g) for g in re.findall(r'\d', group_str)))
-
-def get_delivery_groups(group_str):
-    """Get only delivery groups (1, 2, 3) - for capacity and reassignment"""
-    group_str = group_str.replace("LM", "")
-    all_groups = sorted(set(int(g) for g in re.findall(r'\d', group_str)))
-    return [g for g in all_groups if g in [1, 2, 3]]
 
 # Manual refresh controls
 st.subheader("🔄 Force Data Refresh")
@@ -183,9 +173,7 @@ st.subheader("📊 Current Status")
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
-    delivery_dogs = sum(1 for info in dogs_going_today.values() if not info.get('is_waypoint', False))
-    waypoint_dogs = sum(1 for info in dogs_going_today.values() if info.get('is_waypoint', False))
-    st.metric("Total Dogs", len(dogs_going_today), delta=f"{delivery_dogs} delivery + {waypoint_dogs} waypoints")
+    st.metric("Total Dogs", len(dogs_going_today))
 with col2:
     st.metric("Active Drivers", len(set(info['driver'] for info in dogs_going_today.values())))
 with col3:
@@ -194,9 +182,6 @@ with col3:
 with col4:
     total_capacity = sum(sum(cap.values()) for cap in driver_capacities.values())
     st.metric("Total Driver Capacity", total_capacity)
-
-# Show info about Group 0 handling
-st.info("ℹ️ **Group 0 Policy:** Waypoints (Group 0) stay with original driver when calling out, but help find nearby reassignments"
 
 # Show current callouts
 st.subheader("🚨 Current Driver Callouts")
@@ -247,3 +232,215 @@ elif callout_found:
 if process_reassignments:
     # Find dogs that need reassignment
     dogs_to_reassign = []
+    for dog_id, info in dogs_going_today.items():
+        driver = info["driver"]
+        if driver not in driver_callouts:
+            continue
+        
+        affected = []
+        for g in info["groups"]:
+            # MINIMAL FIX: Only process groups 1, 2, 3 for callouts
+            if g in [1, 2, 3] and driver_callouts[driver].get(f"group{g}", False):
+                affected.append(g)
+        
+        if affected:
+            dogs_to_reassign.append({
+                'dog_id': dog_id,
+                'original_driver': driver,
+                'original_groups': info['groups'],
+                'dog_info': info
+            })
+
+    if dogs_to_reassign:
+        # Sort by priority
+        dogs_to_reassign.sort(key=get_reassignment_priority)
+        st.info(f"🎯 Processing {len(dogs_to_reassign)} dogs in priority order")
+
+        # Calculate current driver loads
+        driver_loads = defaultdict(lambda: {'group1': 0, 'group2': 0, 'group3': 0})
+        for dog_id, info in dogs_going_today.items():
+            for g in info['groups']:
+                # MINIMAL FIX: Only count groups 1, 2, 3 toward capacity
+                if g in [1, 2, 3]:
+                    driver_loads[info['driver']][f'group{g}'] += info['num_dogs']
+
+        # Progress bar
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+
+        # Process each dog
+        start_time = time.time()
+        for idx, dog in enumerate(dogs_to_reassign):
+            progress = (idx + 1) / len(dogs_to_reassign)
+            progress_bar.progress(progress)
+            status_text.text(f"Processing dog {idx + 1}/{len(dogs_to_reassign)}: {dog['dog_id']}")
+
+            dog_id = dog['dog_id']
+            dog_groups = dog['original_groups']
+            # MINIMAL FIX: Filter out group 0 from reassignment consideration
+            delivery_groups = [g for g in dog_groups if g in [1, 2, 3]]
+            if not delivery_groups:  # Skip if only group 0
+                continue
+                
+            num_dogs = dog['dog_info']['num_dogs']
+            distances = distance_matrix.get(dog_id, {})
+            best_driver, best_dist = None, float('inf')
+            
+            for other_id, dist in distances.items():
+                # Skip invalid distances
+                if dist == 0 or dist > MAX_REASSIGNMENT_DISTANCE or other_id not in dogs_going_today:
+                    continue
+                    
+                candidate_driver = dogs_going_today[other_id]['driver']
+                if candidate_driver == dog['original_driver'] or candidate_driver not in driver_capacities:
+                    continue
+                
+                # Skip if candidate driver is also calling out
+                skip_candidate = False
+                for g in delivery_groups:  # Use filtered delivery groups
+                    if driver_callouts[candidate_driver].get(f"group{g}", False):
+                        skip_candidate = True
+                        break
+                if skip_candidate:
+                    continue
+                
+                # Check group compatibility
+                other_groups = [g for g in dogs_going_today[other_id]['groups'] if g in [1, 2, 3]]  # Filter other groups too
+                exact = any(g in other_groups for g in delivery_groups)
+                adjacent = any(is_adjacent(g1, g2) for g1 in delivery_groups for g2 in other_groups)
+                if not (exact or adjacent):
+                    continue
+                
+                # Apply distance limits
+                weighted = dist if exact else dist * 2
+                max_allowed = 3.0 if exact else 1.5
+                
+                if weighted > max_allowed or weighted > best_dist:
+                    continue
+                
+                # Check capacity
+                fits = all(driver_loads[candidate_driver][f"group{g}"] + num_dogs <= driver_capacities[candidate_driver][f"group{g}"] for g in delivery_groups)
+                if fits:
+                    best_driver, best_dist = candidate_driver, weighted
+
+            # Make assignment
+            if best_driver:
+                for g in delivery_groups:  # Use filtered delivery groups
+                    driver_loads[best_driver][f"group{g}"] += num_dogs
+                dogs_going_today[dog_id]['driver'] = best_driver
+                dogs_going_today[dog_id]['assignment'] = f"{best_driver}:{'&'.join(map(str, delivery_groups))}"
+                assignments.append({
+                    "Dog ID": dog_id,
+                    "Dog Name": dog['dog_info'].get('dog_name', 'Unknown'),
+                    "Original Driver": dog['original_driver'],
+                    "New Driver": best_driver,
+                    "Groups": '&'.join(map(str, delivery_groups)),
+                    "Distance": round(best_dist, 2),
+                    "Match Type": "Exact" if best_dist <= 3.0 else "Adjacent"
+                })
+
+        processing_time = time.time() - start_time
+        progress_bar.progress(1.0)
+        status_text.text(f"✅ Reassignment processing complete in {processing_time:.1f} seconds!")
+
+        # Show results
+        if assignments:
+            st.success(f"✅ Successfully reassigned {len(assignments)} dogs!")
+            result_df = pd.DataFrame(assignments)
+            st.dataframe(result_df, use_container_width=True)
+            
+            # Download button for results
+            csv = result_df.to_csv(index=False)
+            st.download_button(
+                label="📥 Download Reassignments CSV",
+                data=csv,
+                file_name="dog_reassignments.csv",
+                mime="text/csv"
+            )
+        else:
+            st.warning("⚠️ No dogs could be reassigned within distance constraints")
+    else:
+        st.info("ℹ️ No dogs need reassignment")
+
+# Driver capacity analysis
+st.subheader("📈 Driver Capacity Analysis")
+if st.button("📊 Show Current Driver Loads"):
+    driver_loads = defaultdict(lambda: {'group1': 0, 'group2': 0, 'group3': 0})
+    for dog_id, info in dogs_going_today.items():
+        for g in info['groups']:
+            # MINIMAL FIX: Only count groups 1, 2, 3 toward capacity
+            if g in [1, 2, 3]:
+                driver_loads[info['driver']][f'group{g}'] += info['num_dogs']
+    
+    capacity_data = []
+    overloaded_drivers = []
+    
+    for driver, capacity in driver_capacities.items():
+        load = driver_loads.get(driver, {'group1': 0, 'group2': 0, 'group3': 0})
+        
+        # Calculate available spots for each group
+        group1_available = capacity['group1'] - load['group1']
+        group2_available = capacity['group2'] - load['group2'] 
+        group3_available = capacity['group3'] - load['group3']
+        
+        # Format: "available1, available2, available3"
+        availability_display = f"{group1_available}, {group2_available}, {group3_available}"
+        
+        capacity_data.append({
+            'Driver': driver,
+            'Available Spots (G1, G2, G3)': availability_display
+        })
+        
+        # Track overloaded drivers
+        if group1_available < 0 or group2_available < 0 or group3_available < 0:
+            overloaded_drivers.append({
+                'Driver': driver,
+                'Group 1': f"{load['group1']}/{capacity['group1']} ({group1_available})",
+                'Group 2': f"{load['group2']}/{capacity['group2']} ({group2_available})",
+                'Group 3': f"{load['group3']}/{capacity['group3']} ({group3_available})"
+            })
+    
+    # Sort by driver name alphabetically
+    capacity_data.sort(key=lambda x: x['Driver'])
+    
+    capacity_df = pd.DataFrame(capacity_data)
+    st.dataframe(capacity_df, use_container_width=True)
+    
+    # Highlight overloaded drivers
+    if overloaded_drivers:
+        st.error("🚨 Overloaded drivers detected!")
+        overloaded_df = pd.DataFrame(overloaded_drivers)
+        st.dataframe(overloaded_df, use_container_width=True)
+    else:
+        st.success("✅ No drivers are overloaded!")
+
+# Smart cache info
+with st.expander("💾 Smart Cache Strategy Details"):
+    st.write("**🧠 Intelligent Caching Based on Real-World Usage:**")
+    st.write("")
+    st.write("📅 **Distance Matrix: 1 WEEK cache**")
+    st.write("   • Changes rarely (weekly route updates)")
+    st.write("   • Heaviest computation (biggest performance gain)")
+    st.write("   • Only rebuild when routes actually change")
+    st.write("")
+    st.write("⏱️ **Daily Assignments: 2 MINUTE cache**")
+    st.write("   • Changes frequently throughout the day")
+    st.write("   • Balance between performance and freshness")
+    st.write("   • Use 'REFRESH ALL DATA' for immediate updates")
+    st.write("")
+    st.write("⚡ **Driver Callouts: 1 MINUTE cache**")
+    st.write("   • Most dynamic data (last-minute callouts)")
+    st.write("   • Near real-time updates")
+    st.write("   • Critical for accurate reassignments")
+    st.write("")
+    st.write("🎯 **Result: Distance matrix stays fast, operational data stays fresh!**")
+    st.write("")
+    st.write("💡 **Pro Tip:** Use 'REFRESH ALL DATA' button when you make changes in Google Sheets!")
+
+# Quick stats
+with st.expander("📋 Quick Data Summary"):
+    st.write(f"**Dogs in system:** {len(dogs_going_today)}")
+    st.write(f"**Active drivers:** {len(driver_capacities)}")
+    st.write(f"**Distance matrix size:** {len(distance_matrix)} x {len(matrix_df.columns)-1}")
+    st.write(f"**Total driver capacity:** {sum(sum(cap.values()) for cap in driver_capacities.values())}")
+    st.write(f"**Current callouts:** {callout_count}")
