@@ -407,31 +407,56 @@ if st.button("📊 Show Current Driver Loads"):
             driver_loads[info['driver']][f'group{g}'] += info['num_dogs']
     
     capacity_data = []
+    overloaded_drivers = []
+    
     for driver, capacity in driver_capacities.items():
         load = driver_loads.get(driver, {'group1': 0, 'group2': 0, 'group3': 0})
-        for group_num in [1, 2, 3]:
-            current = load[f'group{group_num}']
-            total = capacity[f'group{group_num}']
-            available = total - current
-            utilization = round((current / total) * 100, 1) if total > 0 else 0
-            
-            capacity_data.append({
+        
+        # Calculate available spots for each group
+        group1_available = capacity['group1'] - load['group1']
+        group2_available = capacity['group2'] - load['group2'] 
+        group3_available = capacity['group3'] - load['group3']
+        
+        # Format: "available1, available2, available3"
+        availability_display = f"{group1_available}, {group2_available}, {group3_available}"
+        
+        # Calculate totals
+        total_current = load['group1'] + load['group2'] + load['group3']
+        total_capacity = capacity['group1'] + capacity['group2'] + capacity['group3']
+        total_available = total_capacity - total_current
+        overall_utilization = round((total_current / total_capacity) * 100, 1) if total_capacity > 0 else 0
+        
+        capacity_data.append({
+            'Driver': driver,
+            'Available Spots (G1, G2, G3)': availability_display,
+            'Total Used': total_current,
+            'Total Capacity': total_capacity,
+            'Total Available': total_available,
+            'Utilization %': overall_utilization
+        })
+        
+        # Track overloaded drivers
+        if group1_available < 0 or group2_available < 0 or group3_available < 0:
+            overloaded_drivers.append({
                 'Driver': driver,
-                'Group': group_num,
-                'Current': current,
-                'Capacity': total,
-                'Available': available,
-                'Utilization %': utilization
+                'Group 1': f"{load['group1']}/{capacity['group1']} ({group1_available})",
+                'Group 2': f"{load['group2']}/{capacity['group2']} ({group2_available})",
+                'Group 3': f"{load['group3']}/{capacity['group3']} ({group3_available})"
             })
+    
+    # Sort by total available spots (most available first)
+    capacity_data.sort(key=lambda x: x['Total Available'], reverse=True)
     
     capacity_df = pd.DataFrame(capacity_data)
     st.dataframe(capacity_df, use_container_width=True)
     
     # Highlight overloaded drivers
-    overloaded = capacity_df[capacity_df['Available'] < 0]
-    if len(overloaded) > 0:
+    if overloaded_drivers:
         st.error("🚨 Overloaded drivers detected!")
-        st.dataframe(overloaded, use_container_width=True)
+        overloaded_df = pd.DataFrame(overloaded_drivers)
+        st.dataframe(overloaded_df, use_container_width=True)
+    else:
+        st.success("✅ No drivers are overloaded!")
 
 # Smart cache info
 with st.expander("💾 Smart Cache Strategy Details"):
