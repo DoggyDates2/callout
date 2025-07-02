@@ -5,7 +5,6 @@ from collections import defaultdict
 
 st.set_page_config(page_title="🐶 Dog Assignment Tool", layout="wide")
 st.title("🐶 Dog Assignment Tool")
-st.info("📋 Focus: Handle driver callouts and reassign dogs efficiently")
 
 # Configuration
 MAX_REASSIGNMENT_DISTANCE = 5.0
@@ -29,13 +28,6 @@ def build_distance_matrix(matrix_df):
     distance_matrix = {}
     dog_ids = matrix_df.columns[1:]
     
-    # Progress for large datasets
-    total_rows = len(matrix_df)
-    if total_rows > 100:
-        st.info(f"🔄 Building distance matrix for {total_rows} dogs... (cached for 1 WEEK)")
-    
-    progress_placeholder = st.empty()
-    
     for i, row in matrix_df.iterrows():
         row_id = str(row.iloc[0]).strip()
         distance_matrix[row_id] = {}
@@ -45,13 +37,6 @@ def build_distance_matrix(matrix_df):
             except:
                 val = 0.0
             distance_matrix[row_id][str(col_id).strip()] = val
-        
-        # Progress for large files
-        if total_rows > 500 and i % 200 == 0:
-            progress_placeholder.info(f"  ⏳ Processing distance matrix: {i}/{total_rows} rows...")
-    
-    if total_rows > 100:
-        progress_placeholder.success(f"✅ Distance matrix complete! Cached for 1 week.")
     
     return distance_matrix
 
@@ -129,19 +114,6 @@ def get_groups(group_str):
     group_str = group_str.replace("LM", "")
     return sorted(set(int(g) for g in re.findall(r'\d', group_str)))
 
-# Cache status display
-st.subheader("💾 Smart Cache Status")
-col1, col2, col3 = st.columns(3)
-
-with col1:
-    st.info("🗺️ **Distance Matrix**\n📅 Cached for 1 WEEK\n⚡ Changes weekly")
-
-with col2:
-    st.info("📋 **Daily Assignments**\n⏱️ Cached for 2 MINUTES\n🔄 Changes frequently")
-
-with col3:
-    st.info("🚨 **Driver Callouts**\n⚡ Cached for 1 MINUTE\n🆕 Real-time updates")
-
 # Manual refresh controls
 st.subheader("🔄 Force Data Refresh")
 st.info("💡 Use these buttons to get the latest data immediately (bypasses cache)")
@@ -177,20 +149,12 @@ with col4:
         st.rerun()
 
 # Load and process data with smart caching
-load_start = st.empty()
-load_start.info("📊 Loading data with smart caching...")
-
 import time
 total_start_time = time.time()
 
 # Load raw data with different cache strategies
-matrix_start = time.time()
 matrix_df = load_distance_matrix_csv(url_matrix)
-matrix_load_time = time.time() - matrix_start
-
-assignments_start = time.time()
 map_df = load_assignments_csv(url_map)
-assignments_load_time = time.time() - assignments_start
 
 # Clean data
 map_df["Dog ID"] = map_df["Dog ID"].astype(str).str.strip()
@@ -198,20 +162,11 @@ map_df["Name"] = map_df["Name"].astype(str).str.strip()
 map_df["Group"] = map_df["Group"].astype(str).str.strip()
 
 # Process with smart caching
-process_start = time.time()
 dogs_going_today = process_dogs_data(map_df)
 driver_capacities, driver_callouts = process_driver_data(map_df)
-process_time = time.time() - process_start
 
 # Build distance matrix (heavily cached)
-distance_start = time.time()
 distance_matrix = build_distance_matrix(matrix_df)
-distance_time = time.time() - distance_start
-
-total_time = time.time() - total_start_time
-
-# Show performance summary
-load_start.success(f"✅ Smart loading complete in {total_time:.1f}s! (Matrix: {matrix_load_time:.1f}s, Assignments: {assignments_load_time:.1f}s, Processing: {process_time:.1f}s, Distance Matrix: {distance_time:.1f}s)")
 
 # Current status summary
 st.subheader("📊 Current Status")
@@ -420,7 +375,7 @@ if st.button("📊 Show Current Driver Loads"):
         # Format: "available1, available2, available3"
         availability_display = f"{group1_available}, {group2_available}, {group3_available}"
         
-        # Calculate totals
+        # Calculate totals for sorting and utilization
         total_current = load['group1'] + load['group2'] + load['group3']
         total_capacity = capacity['group1'] + capacity['group2'] + capacity['group3']
         total_available = total_capacity - total_current
@@ -429,8 +384,6 @@ if st.button("📊 Show Current Driver Loads"):
         capacity_data.append({
             'Driver': driver,
             'Available Spots (G1, G2, G3)': availability_display,
-            'Total Used': total_current,
-            'Total Capacity': total_capacity,
             'Total Available': total_available,
             'Utilization %': overall_utilization
         })
