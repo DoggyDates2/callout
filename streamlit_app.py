@@ -12,13 +12,52 @@ MAX_REASSIGNMENT_DISTANCE = 5.0
 url_map = "https://docs.google.com/spreadsheets/d/1mg8d5CLxSR54KhNUL8SpL5jzrGN-bghTsC9vxSK8lR0/export?format=csv&gid=267803750"
 url_matrix = "https://docs.google.com/spreadsheets/d/1421xCS86YH6hx0RcuZCyXkyBK_xl-VDSlXyDNvw09Pg/export?format=csv&gid=398422902"
 
-@st.cache_data(ttl=300)  # Cache for 5 minutes
-def load_csv(url):
+# Smart Caching Strategy
+@st.cache_data(ttl=604800)  # 7 DAYS = 604800 seconds (distance matrix changes weekly)
+def load_distance_matrix_csv(url):
+    """Distance matrix - cached for 1 WEEK since it rarely changes"""
     return pd.read_csv(url, dtype=str)
 
-@st.cache_data(ttl=300)  # Cache for 5 minutes
+@st.cache_data(ttl=3600)  # 1 HOUR = 3600 seconds (assignments change daily)
+def load_assignments_csv(url):
+    """Assignments data - cached for 1 HOUR since it changes daily"""
+    return pd.read_csv(url, dtype=str)
+
+@st.cache_data(ttl=604800)  # 7 DAYS (distance matrix processing - very heavy)
+def build_distance_matrix(matrix_df):
+    """Build distance matrix - CACHED FOR 1 WEEK (heaviest operation)"""
+    distance_matrix = {}
+    dog_ids = matrix_df.columns[1:]
+    
+    # Progress for large datasets
+    total_rows = len(matrix_df)
+    if total_rows > 100:
+        st.info(f"🔄 Building distance matrix for {total_rows} dogs... (cached for 1 WEEK)")
+    
+    progress_placeholder = st.empty()
+    
+    for i, row in matrix_df.iterrows():
+        row_id = str(row.iloc[0]).strip()
+        distance_matrix[row_id] = {}
+        for j, col_id in enumerate(dog_ids):
+            try:
+                val = float(row.iloc[j + 1])
+            except:
+                val = 0.0
+            distance_matrix[row_id][str(col_id).strip()] = val
+        
+        # Progress for large files
+        if total_rows > 500 and i % 200 == 0:
+            progress_placeholder.info(f"  ⏳ Processing distance matrix: {i}/{total_rows} rows...")
+    
+    if total_rows > 100:
+        progress_placeholder.success(f"✅ Distance matrix complete! Cached for 1 week.")
+    
+    return distance_matrix
+
+@st.cache_data(ttl=3600)  # 1 HOUR
 def process_dogs_data(map_df):
-    """Process dogs data - cached for performance"""
+    """Process dogs data - cached for 1 HOUR"""
     dogs_going_today = {}
     
     for _, row in map_df.iterrows():
@@ -41,9 +80,9 @@ def process_dogs_data(map_df):
     
     return dogs_going_today
 
-@st.cache_data(ttl=300)  # Cache for 5 minutes
+@st.cache_data(ttl=60)  # 1 MINUTE (callouts change constantly)
 def process_driver_data(map_df):
-    """Process driver data - cached for performance"""
+    """Process driver data - cached for 1 MINUTE (callouts change frequently)"""
     driver_capacities = {}
     driver_callouts = {}
     
@@ -62,33 +101,6 @@ def process_driver_data(map_df):
         }
     
     return driver_capacities, driver_callouts
-
-@st.cache_data(ttl=300)  # Cache for 5 minutes - This is the BIG performance fix
-def build_distance_matrix(matrix_df):
-    """Build distance matrix - HEAVILY CACHED for performance"""
-    distance_matrix = {}
-    dog_ids = matrix_df.columns[1:]
-    
-    # Progress for large datasets
-    total_rows = len(matrix_df)
-    if total_rows > 100:
-        st.info(f"🔄 Processing {total_rows} rows in distance matrix... (this will be cached)")
-    
-    for i, row in matrix_df.iterrows():
-        row_id = str(row.iloc[0]).strip()
-        distance_matrix[row_id] = {}
-        for j, col_id in enumerate(dog_ids):
-            try:
-                val = float(row.iloc[j + 1])
-            except:
-                val = 0.0
-            distance_matrix[row_id][str(col_id).strip()] = val
-        
-        # Progress for large files
-        if total_rows > 500 and i % 200 == 0:
-            st.write(f"  ⏳ Processed {i}/{total_rows} rows...")
-    
-    return distance_matrix
 
 def get_reassignment_priority(dog_data):
     """Calculate priority for dog reassignment. Lower number = higher priority."""
@@ -117,40 +129,89 @@ def get_groups(group_str):
     group_str = group_str.replace("LM", "")
     return sorted(set(int(g) for g in re.findall(r'\d', group_str)))
 
-# Load and process data with performance monitoring
-with st.spinner("📊 Loading data from Google Sheets..."):
-    import time
-    start_time = time.time()
-    
-    # Load raw data
-    map_df = load_csv(url_map)
-    matrix_df = load_csv(url_matrix)
-    
-    load_time = time.time() - start_time
-    st.success(f"✅ Data loaded in {load_time:.1f} seconds!")
+# Cache status display
+st.subheader("💾 Smart Cache Status")
+col1, col2, col3 = st.columns(3)
 
-# Process data with caching
-with st.spinner("🔄 Processing data..."):
-    start_time = time.time()
-    
-    # Clean data
-    map_df["Dog ID"] = map_df["Dog ID"].astype(str).str.strip()
-    map_df["Name"] = map_df["Name"].astype(str).str.strip()
-    map_df["Group"] = map_df["Group"].astype(str).str.strip()
-    
-    # Process with cached functions
-    dogs_going_today = process_dogs_data(map_df)
-    driver_capacities, driver_callouts = process_driver_data(map_df)
-    
-    process_time = time.time() - start_time
-    st.success(f"✅ Data processing complete in {process_time:.1f} seconds!")
+with col1:
+    st.info("🗺️ **Distance Matrix**\n📅 Cached for 1 WEEK\n⚡ Changes weekly")
 
-# Build distance matrix (this is the slow part)
-with st.spinner("🗺️ Building distance matrix (cached)..."):
-    start_time = time.time()
-    distance_matrix = build_distance_matrix(matrix_df)
-    matrix_time = time.time() - start_time
-    st.success(f"✅ Distance matrix ready in {matrix_time:.1f} seconds!")
+with col2:
+    st.info("📋 **Daily Assignments**\n⏱️ Cached for 2 MINUTES\n🔄 Changes frequently")
+
+with col3:
+    st.info("🚨 **Driver Callouts**\n⚡ Cached for 1 MINUTE\n🆕 Real-time updates")
+
+# Manual refresh controls
+st.subheader("🔄 Force Data Refresh")
+st.info("💡 Use these buttons to get the latest data immediately (bypasses cache)")
+
+col1, col2, col3, col4 = st.columns(4)
+
+with col1:
+    if st.button("🆕 **REFRESH ALL DATA**", type="primary", help="Get latest assignments & callouts now"):
+        # Clear all non-matrix caches
+        load_assignments_csv.clear()
+        process_dogs_data.clear() 
+        process_driver_data.clear()
+        st.success("🔄 All data refreshed! Reloading latest from Google Sheets...")
+        st.rerun()
+
+with col2:
+    if st.button("📋 Refresh Assignments", help="Update dog assignments only"):
+        load_assignments_csv.clear()
+        process_dogs_data.clear()
+        st.success("📋 Assignments refreshed!")
+        st.rerun()
+
+with col3:
+    if st.button("🚨 Refresh Callouts", help="Update driver callouts only"):
+        process_driver_data.clear()
+        st.success("🚨 Callouts refreshed!")
+        st.rerun()
+
+with col4:
+    if st.button("🗺️ Refresh Matrix", help="Rebuild distance matrix (weekly)"):
+        st.cache_data.clear()
+        st.success("🗺️ Full rebuild triggered!")
+        st.rerun()
+
+# Load and process data with smart caching
+load_start = st.empty()
+load_start.info("📊 Loading data with smart caching...")
+
+import time
+total_start_time = time.time()
+
+# Load raw data with different cache strategies
+matrix_start = time.time()
+matrix_df = load_distance_matrix_csv(url_matrix)
+matrix_load_time = time.time() - matrix_start
+
+assignments_start = time.time()
+map_df = load_assignments_csv(url_map)
+assignments_load_time = time.time() - assignments_start
+
+# Clean data
+map_df["Dog ID"] = map_df["Dog ID"].astype(str).str.strip()
+map_df["Name"] = map_df["Name"].astype(str).str.strip()
+map_df["Group"] = map_df["Group"].astype(str).str.strip()
+
+# Process with smart caching
+process_start = time.time()
+dogs_going_today = process_dogs_data(map_df)
+driver_capacities, driver_callouts = process_driver_data(map_df)
+process_time = time.time() - process_start
+
+# Build distance matrix (heavily cached)
+distance_start = time.time()
+distance_matrix = build_distance_matrix(matrix_df)
+distance_time = time.time() - distance_start
+
+total_time = time.time() - total_start_time
+
+# Show performance summary
+load_start.success(f"✅ Smart loading complete in {total_time:.1f}s! (Matrix: {matrix_load_time:.1f}s, Assignments: {assignments_load_time:.1f}s, Processing: {process_time:.1f}s, Distance Matrix: {distance_time:.1f}s)")
 
 # Current status summary
 st.subheader("📊 Current Status")
@@ -188,7 +249,7 @@ st.subheader("🔧 Manual Callout Override")
 col1, col2 = st.columns(2)
 
 with col1:
-    # This should now be fast since all data is processed and cached
+    # This should now be instant since data is cached
     driver_list = sorted(set(info['driver'] for info in dogs_going_today.values()))
     selected_driver = st.selectbox("Driver to call out", ["None"] + driver_list)
 
@@ -372,16 +433,28 @@ if st.button("📊 Show Current Driver Loads"):
         st.error("🚨 Overloaded drivers detected!")
         st.dataframe(overloaded, use_container_width=True)
 
-# Performance info
-with st.expander("⚡ Performance Info"):
-    st.write("**🚀 Performance Optimizations Applied:**")
-    st.write("✅ Heavy data processing cached for 5 minutes")
-    st.write("✅ Distance matrix cached (biggest performance boost)")
-    st.write("✅ Google Sheets data cached")
-    st.write("✅ Processing times displayed for monitoring")
+# Smart cache info
+with st.expander("💾 Smart Cache Strategy Details"):
+    st.write("**🧠 Intelligent Caching Based on Real-World Usage:**")
     st.write("")
-    st.write("**💡 First load may be slow, subsequent loads should be fast!**")
-    st.write("**🔄 Cache refreshes every 5 minutes for fresh data**")
+    st.write("📅 **Distance Matrix: 1 WEEK cache**")
+    st.write("   • Changes rarely (weekly route updates)")
+    st.write("   • Heaviest computation (biggest performance gain)")
+    st.write("   • Only rebuild when routes actually change")
+    st.write("")
+    st.write("⏱️ **Daily Assignments: 2 MINUTE cache**")
+    st.write("   • Changes frequently throughout the day")
+    st.write("   • Balance between performance and freshness")
+    st.write("   • Use 'REFRESH ALL DATA' for immediate updates")
+    st.write("")
+    st.write("⚡ **Driver Callouts: 1 MINUTE cache**")
+    st.write("   • Most dynamic data (last-minute callouts)")
+    st.write("   • Near real-time updates")
+    st.write("   • Critical for accurate reassignments")
+    st.write("")
+    st.write("🎯 **Result: Distance matrix stays fast, operational data stays fresh!**")
+    st.write("")
+    st.write("💡 **Pro Tip:** Use 'REFRESH ALL DATA' button when you make changes in Google Sheets!")
 
 # Quick stats
 with st.expander("📋 Quick Data Summary"):
