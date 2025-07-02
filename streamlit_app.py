@@ -59,6 +59,7 @@ def process_dogs_data(map_df):
                 'num_dogs': num_dogs,
                 'driver': driver,
                 'groups': get_groups(group_str),
+                'available_for_proximity': is_available_for_proximity(group_str),
                 'address': row.get("Address", ""),
                 'dog_name': row.get("Dog Name", "")
             }
@@ -112,7 +113,23 @@ def parse_cap(val):
 
 def get_groups(group_str):
     group_str = group_str.replace("LM", "")
+    
+    # Special case: "2XX2" should be treated as "2"
+    if "XX" in group_str and any(char.isdigit() for char in group_str):
+        # Extract digits from strings like "2XX2" -> "2"
+        digits_only = ''.join(char for char in group_str if char.isdigit())
+        if digits_only:
+            return sorted(set(int(g) for g in digits_only))
+    
+    # Regular case: extract all digits
     return sorted(set(int(g) for g in re.findall(r'\d', group_str)))
+
+def is_available_for_proximity(group_str):
+    """Check if this assignment can be used for proximity matching"""
+    # "XX" (without digits) is not available for proximity
+    if group_str.strip().upper() == "XX":
+        return False
+    return True
 
 # Manual refresh controls
 st.subheader("🔄 Force Data Refresh")
@@ -199,6 +216,9 @@ for driver, callouts in driver_callouts.items():
 if not callout_found:
     st.success("✅ No drivers calling out today!")
 
+# Show XX handling info
+st.info("ℹ️ **Special Cases:** Group 0 (waypoints) and XX (admin slots) count toward capacity but stay with original driver. Exception: 2XX2 = Group 2")
+
 # Manual callout override
 st.subheader("🔧 Manual Callout Override")
 st.info("💡 Defaults to all three groups - adjust if driver is only calling out specific groups")
@@ -216,13 +236,14 @@ with col2:
 assignments = []
 process_reassignments = False
 
-if selected_driver != "None" and selected_groups and st.button("🚀 Run Manual Callout Reassignment"):
-    st.subheader("🔄 Processing Manual Callout Reassignment")
-    # Apply manual callout override
-    for g in selected_groups:
-        driver_callouts[selected_driver][f"group{g}"] = True
-    process_reassignments = True
-    st.warning(f"🔧 Manual override: {selected_driver} calling out Groups {selected_groups}")
+if selected_driver != "None" and selected_groups:
+    if st.button("🚀 Run Manual Callout Reassignment"):
+        st.subheader("🔄 Processing Manual Callout Reassignment")
+        # Apply manual callout override
+        for g in selected_groups:
+            driver_callouts[selected_driver][f"group{g}"] = True
+        process_reassignments = True
+        st.warning(f"🔧 Manual override: {selected_driver} calling out Groups {selected_groups}")
 
 elif callout_found:
     st.subheader("🔄 Processing Automatic Reassignments")
@@ -289,6 +310,10 @@ if process_reassignments:
             for other_id, dist in distances.items():
                 # Skip invalid distances
                 if dist == 0 or dist > MAX_REASSIGNMENT_DISTANCE or other_id not in dogs_going_today:
+                    continue
+                
+                # Skip if this location is not available for proximity (like "XX")
+                if not dogs_going_today[other_id].get('available_for_proximity', True):
                     continue
                     
                 candidate_driver = dogs_going_today[other_id]['driver']
