@@ -3,7 +3,7 @@ import pandas as pd
 import re
 from collections import defaultdict
 
-st.set_page_config(page_title="🐶 Dog Assignment Tool", layout="wide")
+.set_page_config(page_title="🐶 Dog Assignment Tool", layout="wide")
 st.title("🐶 Dog Assignment Tool")
 
 # Configuration
