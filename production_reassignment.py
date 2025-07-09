@@ -44,7 +44,21 @@ class ProductionDogReassignmentSystem:
     def setup_google_sheets_client(self):
         """Setup Google Sheets API client using service account credentials"""
         try:
+            # DEBUG: Print all environment variables to see what's available
+            print("🔍 DEBUG: Available environment variables:")
+            for key, value in os.environ.items():
+                if 'GOOGLE' in key or 'TEST' in key or 'SECRET' in key:
+                    # Show first/last 20 chars for security
+                    safe_value = value[:20] + "..." + value[-20:] if len(value) > 40 else value[:10] + "..."
+                    print(f"   {key}: {safe_value}")
+            
             credentials_json = os.environ.get('GOOGLE_SERVICE_ACCOUNT_JSON')
+            test_secret = os.environ.get('TEST_SECRET')
+            
+            print(f"🔍 GOOGLE_SERVICE_ACCOUNT_JSON exists: {credentials_json is not None}")
+            print(f"🔍 GOOGLE_SERVICE_ACCOUNT_JSON length: {len(credentials_json) if credentials_json else 0}")
+            print(f"🔍 TEST_SECRET value: {test_secret}")
+            
             if not credentials_json:
                 print("❌ Error: GOOGLE_SERVICE_ACCOUNT_JSON environment variable not found")
                 return None
@@ -140,12 +154,24 @@ class ProductionDogReassignmentSystem:
             response = requests.get(self.MAP_SHEET_URL)
             response.raise_for_status()
             
+            # DEBUG: Print first 500 characters of response
+            print(f"🔍 Map sheet CSV preview:")
+            print(response.text[:500])
+            print("..." if len(response.text) > 500 else "")
+            
             # Parse CSV content
             from io import StringIO
             df = pd.read_csv(StringIO(response.text))
             
             print(f"🐕 Map sheet shape: {df.shape}")
             print(f"🐕 Map sheet columns: {list(df.columns)}")
+            
+            # DEBUG: Print first few rows
+            if len(df) > 0:
+                print(f"🔍 First 3 rows of map sheet:")
+                print(df.head(3))
+            else:
+                print("⚠️ Map sheet DataFrame is empty!")
             
             dog_assignments = {}
             callout_dogs = []
@@ -264,6 +290,26 @@ class ProductionDogReassignmentSystem:
             # Parse CSV content
             from io import StringIO
             df = pd.read_csv(StringIO(response.text))
+            
+            print(f"👥 Driver data shape: {df.shape}")
+            print(f"👥 Driver data columns: {list(df.columns)}")
+            
+            # DEBUG: Check if we have enough columns
+            print(f"🔍 DataFrame has {len(df.columns)} columns, need at least 23 for column W")
+            
+            # DEBUG: Print column indices we're trying to access
+            if len(df) > 0:
+                print(f"🔍 Sample row to check column access:")
+                sample_row = df.iloc[0]
+                print(f"   Row length: {len(sample_row)}")
+                if len(sample_row) > 17:
+                    print(f"   Column R (17): {sample_row.iloc[17] if not pd.isna(sample_row.iloc[17]) else 'NaN'}")
+                if len(sample_row) > 20:
+                    print(f"   Column U (20): {sample_row.iloc[20] if not pd.isna(sample_row.iloc[20]) else 'NaN'}")
+                if len(sample_row) > 21:
+                    print(f"   Column V (21): {sample_row.iloc[21] if not pd.isna(sample_row.iloc[21]) else 'NaN'}")
+                if len(sample_row) > 22:
+                    print(f"   Column W (22): {sample_row.iloc[22] if not pd.isna(sample_row.iloc[22]) else 'NaN'}")
             
             driver_capacities = {}
             
