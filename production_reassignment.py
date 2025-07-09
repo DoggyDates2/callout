@@ -70,12 +70,24 @@ class ProductionDogReassignmentSystem:
             response = requests.get(self.DISTANCE_MATRIX_URL)
             response.raise_for_status()
             
+            # DEBUG: Print first 500 characters of response
+            print(f"🔍 Distance matrix CSV preview:")
+            print(response.text[:500])
+            print("..." if len(response.text) > 500 else "")
+            
             # Parse CSV content
             from io import StringIO
             df = pd.read_csv(StringIO(response.text))
             
             print(f"📊 Distance matrix shape: {df.shape}")
             print(f"📊 Distance matrix columns: {list(df.columns)}")
+            
+            # DEBUG: Print first few rows
+            if len(df) > 0:
+                print(f"🔍 First 3 rows of distance matrix:")
+                print(df.head(3))
+            else:
+                print("⚠️ Distance matrix DataFrame is empty!")
             
             # Handle the case where first column contains row Dog IDs and other columns contain column Dog IDs
             distance_matrix = {}
