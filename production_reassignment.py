@@ -421,26 +421,381 @@ class ProductionDogReassignmentSystem:
         
         return load
     
+    def cluster_callout_dogs(self, dogs_to_reassign, max_cluster_distance=0.5):
+        """Group callout dogs that are close to each other for efficient batch assignment"""
+        print(f"\n🔍 Clustering callout dogs (max distance: {max_cluster_distance} miles)...")
+        
+        clusters = []
+        unassigned_dogs = dogs_to_reassign.copy()
+        
+        while unassigned_dogs:
+            # Start new cluster with first unassigned dog
+            cluster_seed = unassigned_dogs[0]
+            cluster = [cluster_seed]
+            unassigned_dogs.remove(cluster_seed)
+            
+            # Find all dogs within clustering distance of any dog in this cluster
+            cluster_changed = True
+            while cluster_changed:
+                cluster_changed = False
+                dogs_to_remove = []
+                
+                for candidate_dog in unassigned_dogs:
+                    candidate_id = candidate_dog['dog_id']
+                    
+                    # Check if candidate is close to any dog in current cluster
+                    close_to_cluster = False
+                    for cluster_dog in cluster:
+                        cluster_id = cluster_dog['dog_id']
+                        
+                        # Get distance between candidate and cluster dog
+                        distance = None
+                        if (candidate_id, cluster_id) in self.distance_matrix:
+                            distance = self.distance_matrix[(candidate_id, cluster_id)]
+                        elif (cluster_id, candidate_id) in self.distance_matrix:
+                            distance = self.distance_matrix[(cluster_id, candidate_id)]
+                        
+                        if distance and distance <= max_cluster_distance:
+                            close_to_cluster = True
+                            break
+                    
+                    if close_to_cluster:
+                        cluster.append(candidate_dog)
+                        dogs_to_remove.append(candidate_dog)
+                        cluster_changed = True
+                
+                # Remove dogs that joined the cluster
+                for dog in dogs_to_remove:
+                    unassigned_dogs.remove(dog)
+            
+            clusters.append(cluster)
+        
+        # Print cluster analysis
+        print(f"📊 Created {len(clusters)} clusters:")
+        for i, cluster in enumerate(clusters):
+            dog_ids = [d['dog_id'] for d in cluster]
+            callouts = [d['original_callout'] for d in cluster]
+            print(f"   Cluster {i+1}: {len(cluster)} dogs - {dog_ids}")
+            print(f"      Callouts: {callouts}")
+        
+        return clusters
+    
+    def find_cluster_capable_drivers(self, cluster):
+        """Find drivers who can handle an entire cluster of dogs"""
+        print(f"\n🔍 Finding drivers capable of handling cluster of {len(cluster)} dogs...")
+        
+        # Calculate total dogs and required groups for the cluster
+        total_dogs_needed = sum(dog['num_dogs'] for dog in cluster)
+        all_required_groups = set()
+        
+        for dog in cluster:
+            all_required_groups.update(dog['needed_groups'])
+        
+        required_groups = list(all_required_groups)
+        print(f"   Total dogs: {total_dogs_needed}, Required groups: {required_groups}")
+        
+        # Get cluster center (average position) for distance calculations
+        cluster_center_distances = {}
+        cluster_dog_ids = [dog['dog_id'] for dog in cluster]
+        
+        for other_dog_id in self.dog_assignments.keys():
+            total_distance = 0
+            valid_distances = 0
+            
+            for cluster_dog_id in cluster_dog_ids:
+                distance = None
+                if (cluster_dog_id, other_dog_id) in self.distance_matrix:
+                    distance = self.distance_matrix[(cluster_dog_id, other_dog_id)]
+                elif (other_dog_id, cluster_dog_id) in self.distance_matrix:
+                    distance = self.distance_matrix[(other_dog_id, cluster_dog_id)]
+                
+                if distance and distance > 0:
+                    total_distance += distance
+                    valid_distances += 1
+            
+            if valid_distances > 0:
+                cluster_center_distances[other_dog_id] = total_distance / valid_distances
+        
+        # Find drivers who can handle this cluster
+        capable_drivers = []
+        
+        # Get drivers working today
+        working_drivers = set(data['current_driver'] for data in self.dog_assignments.values())
+        
+        # Exclude callout drivers
+        callout_drivers = set()
+        for dog in cluster:
+            if ':' in dog['original_callout']:
+                callout_driver = dog['original_callout'].split(':', 1)[0].strip()
+                callout_drivers.add(callout_driver)
+        
+        for driver in working_drivers:
+            if driver in callout_drivers:
+                print(f"   ❌ Skipping {driver} - they called out")
+                continue
+            
+            # Check capacity for all required groups
+            current_load = self.calculate_driver_load(driver)
+            driver_capacity = self.driver_capacities.get(driver, {'group1': 9, 'group2': 9, 'group3': 9})
+            
+            capacity_ok = True
+            for group in required_groups:
+                group_key = f'group{group}'
+                current = current_load.get(group_key, 0)
+                capacity = driver_capacity.get(group_key, 9)
+                if current + total_dogs_needed > capacity:
+                    print(f"   ❌ {driver} - insufficient capacity for group {group}: {current}+{total_dogs_needed} > {capacity}")
+                    capacity_ok = False
+                    break
+            
+            if not capacity_ok:
+                continue
+            
+            # Check group compatibility - driver must handle ALL required groups
+            driver_dogs = [data for data in self.dog_assignments.values() if data['current_driver'] == driver]
+            driver_groups = set()
+            for dog_data in driver_dogs:
+                driver_groups.update(dog_data['current_groups'])
+            
+            group_compatible = True
+            for required_group in required_groups:
+                exact_match = required_group in driver_groups
+                adjacent_match = any(self.is_adjacent_group(required_group, [g]) for g in driver_groups)
+                if not (exact_match or adjacent_match):
+                    print(f"   ❌ {driver} - no compatibility for group {required_group}. Has: {list(driver_groups)}")
+                    group_compatible = False
+                    break
+            
+            if not group_compatible:
+                continue
+            
+            # Calculate distance to cluster center
+            min_distance_to_cluster = float('inf')
+            for dog_data in driver_dogs:
+                dog_id = None
+                for orig_id, data in self.dog_assignments.items():
+                    if data == dog_data:
+                        dog_id = orig_id
+                        break
+                
+                if dog_id and dog_id in cluster_center_distances:
+                    distance = cluster_center_distances[dog_id]
+                    min_distance_to_cluster = min(min_distance_to_cluster, distance)
+            
+            if min_distance_to_cluster > 3.0:  # Hard 3-mile limit
+                print(f"   ❌ {driver} - too far from cluster: {min_distance_to_cluster:.1f} miles")
+                continue
+            
+            print(f"   ✅ {driver} can handle cluster: capacity OK, groups compatible, {min_distance_to_cluster:.1f} miles")
+            
+            capable_drivers.append({
+                'driver': driver,
+                'distance_to_cluster': min_distance_to_cluster,
+                'current_load': dict(current_load),
+                'driver_groups': list(driver_groups)
+            })
+        
+        return capable_drivers
+    
+    def calculate_cluster_total_miles(self, cluster, driver_assignment):
+        """Calculate total miles for assigning a cluster to a specific driver"""
+        driver = driver_assignment['driver']
+        
+        # Find the closest dog this driver is already picking up
+        driver_dogs = [dog_id for dog_id, data in self.dog_assignments.items() 
+                      if data['current_driver'] == driver]
+        
+        if not driver_dogs:
+            return float('inf')  # Driver has no existing pickups
+        
+        # Calculate distance from driver's existing route to cluster
+        min_distance_to_cluster = driver_assignment['distance_to_cluster']
+        
+        # Calculate internal cluster distances (distance between dogs in cluster)
+        internal_cluster_distance = 0
+        cluster_dog_ids = [dog['dog_id'] for dog in cluster]
+        
+        for i, dog_id_1 in enumerate(cluster_dog_ids):
+            for dog_id_2 in cluster_dog_ids[i+1:]:
+                distance = None
+                if (dog_id_1, dog_id_2) in self.distance_matrix:
+                    distance = self.distance_matrix[(dog_id_1, dog_id_2)]
+                elif (dog_id_2, dog_id_1) in self.distance_matrix:
+                    distance = self.distance_matrix[(dog_id_2, dog_id_1)]
+                
+                if distance:
+                    internal_cluster_distance += distance
+        
+        # Total miles = distance to reach cluster + internal cluster distances
+        total_miles = min_distance_to_cluster + internal_cluster_distance
+        
+        print(f"      📏 {driver}: {min_distance_to_cluster:.1f} mi to cluster + {internal_cluster_distance:.1f} mi internal = {total_miles:.1f} mi total")
+        
+        return total_miles
+    
+    def optimize_total_system_miles(self, clusters):
+        """Find the assignment combination that minimizes total system miles"""
+        print(f"\n🎯 Optimizing total system miles across {len(clusters)} clusters...")
+        
+        cluster_assignments = []
+        total_system_miles = 0
+        
+        for i, cluster in enumerate(clusters):
+            print(f"\n📍 Optimizing Cluster {i+1} ({len(cluster)} dogs):")
+            
+            capable_drivers = self.find_cluster_capable_drivers(cluster)
+            
+            if not capable_drivers:
+                print(f"   ❌ No drivers can handle this cluster - falling back to individual assignment")
+                # Fall back to individual assignment for this cluster
+                individual_assignments = []
+                for dog in cluster:
+                    assignment = self.find_best_reassignment(dog)
+                    if assignment:
+                        individual_assignments.append({
+                            'type': 'individual',
+                            'dog': dog,
+                            'assignment': assignment
+                        })
+                
+                cluster_assignments.append({
+                    'cluster': cluster,
+                    'type': 'individual',
+                    'assignments': individual_assignments
+                })
+                continue
+            
+            # Calculate total miles for each capable driver
+            best_driver = None
+            best_miles = float('inf')
+            
+            for driver_assignment in capable_drivers:
+                total_miles = self.calculate_cluster_total_miles(cluster, driver_assignment)
+                
+                if total_miles < best_miles:
+                    best_miles = total_miles
+                    best_driver = driver_assignment
+            
+            if best_driver:
+                print(f"   🏆 Best choice: {best_driver['driver']} ({best_miles:.1f} total miles)")
+                
+                cluster_assignments.append({
+                    'cluster': cluster,
+                    'type': 'cluster',
+                    'driver': best_driver['driver'],
+                    'total_miles': best_miles
+                })
+                
+                total_system_miles += best_miles
+            else:
+                print(f"   ❌ No valid cluster assignment found")
+        
+        print(f"\n📊 TOTAL SYSTEM MILES: {total_system_miles:.1f}")
+        
+        return cluster_assignments, total_system_miles
+    
     def find_best_reassignment(self, dog_data: Dict, max_iterations=5) -> Dict:
-        """Find best reassignment for a callout dog (your exact algorithm)"""
+        """Find best individual reassignment for a dog (fallback when clustering fails)"""
         dog_id = dog_data['dog_id']
         needed_groups = dog_data['needed_groups']
         num_dogs = dog_data['num_dogs']
         
+        # Parse the callout driver name (e.g., "Nate:1&2" → "Nate")
+        callout_driver = None
+        if ':' in dog_data['original_callout']:
+            callout_driver = dog_data['original_callout'].split(':', 1)[0].strip()
+        
+        print(f"🔍 Individual assignment for {dog_data['dog_name']} ({dog_id}) - needs groups {needed_groups}")
+        
+        # HARD CONSTRAINT 1: Maximum 3 miles distance
+        nearby_dogs = self.get_nearby_dogs(dog_id, max_distance=3.0)
+        
+        if not nearby_dogs:
+            print(f"   No nearby dogs within 3 miles for {dog_id}")
+            return None
+        
+        valid_candidates = []
+        
+        for nearby_dog_id, distance in nearby_dogs:
+            if nearby_dog_id not in self.dog_assignments:
+                continue
+            
+            nearby_dog_data = self.dog_assignments[nearby_dog_id]
+            candidate_driver = nearby_dog_data['current_driver']
+            nearby_groups = nearby_dog_data['current_groups']
+            
+            # HARD CONSTRAINT 2: Skip the driver who called out
+            if callout_driver and candidate_driver == callout_driver:
+                continue
+            
+            # HARD CONSTRAINT 3: Groups MUST match (exact or adjacent)
+            exact_match = any(group in nearby_groups for group in needed_groups)
+            adjacent_match = any(self.is_adjacent_group(group, nearby_groups) for group in needed_groups)
+            
+            if not (exact_match or adjacent_match):
+                continue
+            
+            # HARD CONSTRAINT 4: Must have capacity
+            current_load = self.calculate_driver_load(candidate_driver)
+            driver_capacity = self.driver_capacities.get(candidate_driver, {'group1': 9, 'group2': 9, 'group3': 9})
+            
+            capacity_ok = True
+            for group in needed_groups:
+                group_key = f'group{group}'
+                current = current_load.get(group_key, 0)
+                capacity = driver_capacity.get(group_key, 9)
+                if current + num_dogs > capacity:
+                    capacity_ok = False
+                    break
+            
+            if not capacity_ok:
+                continue
+            
+            # Calculate preference score
+            score = 10 if exact_match else 5
+            score -= distance * 4
+            if distance <= 0.5:
+                score += (0.5 - distance) * 10
+            
+            total_load = sum(current_load.values())
+            final_score = score - (total_load * 0.1)
+            
+            valid_candidates.append({
+                'to_driver': candidate_driver,
+                'to_groups': needed_groups,
+                'distance': distance,
+                'score': final_score
+            })
+        
+        if valid_candidates:
+            valid_candidates.sort(key=lambda x: x['score'], reverse=True)
+            return valid_candidates[0]
+        
+        return None
+        """Find best reassignment for a callout dog with HARD constraints"""
+        dog_id = dog_data['dog_id']
+        needed_groups = dog_data['needed_groups']
+        num_dogs = dog_data['num_dogs']
+        
+        # Parse the callout driver name (e.g., "Nate:1&2" → "Nate")
+        callout_driver = None
+        if ':' in dog_data['original_callout']:
+            callout_driver = dog_data['original_callout'].split(':', 1)[0].strip()
+        
         print(f"🔍 Finding replacement for {dog_data['dog_name']} ({dog_id}) - needs groups {needed_groups}")
+        print(f"   Excluding callout driver: {callout_driver}")
         
         for iteration in range(max_iterations):
             print(f"   Iteration {iteration + 1}:")
             
-            # Get nearby dogs
-            nearby_dogs = self.get_nearby_dogs(dog_id, max_distance=5.0)
+            # HARD CONSTRAINT 1: Maximum 3 miles distance
+            nearby_dogs = self.get_nearby_dogs(dog_id, max_distance=3.0)
             
             if not nearby_dogs:
-                print(f"   No nearby dogs found for {dog_id}")
+                print(f"   No nearby dogs within 3 miles for {dog_id}")
                 continue
             
-            best_candidate = None
-            best_score = -1
+            valid_candidates = []
             
             for nearby_dog_id, distance in nearby_dogs:
                 if nearby_dog_id not in self.dog_assignments:
@@ -450,70 +805,89 @@ class ProductionDogReassignmentSystem:
                 candidate_driver = nearby_dog_data['current_driver']
                 nearby_groups = nearby_dog_data['current_groups']
                 
-                # Check if this driver has capacity for the needed groups
+                # HARD CONSTRAINT 2: Skip the driver who called out
+                if callout_driver and candidate_driver == callout_driver:
+                    print(f"     ❌ Skipping {candidate_driver} - they called out!")
+                    continue
+                
+                # HARD CONSTRAINT 3: Only consider drivers working today
+                if candidate_driver not in [d['current_driver'] for d in self.dog_assignments.values()]:
+                    print(f"     ❌ Skipping {candidate_driver} - not working today")
+                    continue
+                
+                # HARD CONSTRAINT 4: Groups MUST match (exact or adjacent)
+                exact_match = any(group in nearby_groups for group in needed_groups)
+                adjacent_match = any(self.is_adjacent_group(group, nearby_groups) for group in needed_groups)
+                
+                if not (exact_match or adjacent_match):
+                    print(f"     ❌ Skipping {candidate_driver} - no group match. Has {nearby_groups}, needs {needed_groups}")
+                    continue
+                
+                # HARD CONSTRAINT 5: Must have capacity
                 current_load = self.calculate_driver_load(candidate_driver)
                 driver_capacity = self.driver_capacities.get(candidate_driver, {'group1': 9, 'group2': 9, 'group3': 9})
                 
-                # Check capacity constraints
                 capacity_ok = True
                 for group in needed_groups:
                     group_key = f'group{group}'
                     current = current_load.get(group_key, 0)
                     capacity = driver_capacity.get(group_key, 9)
                     if current + num_dogs > capacity:
+                        print(f"     ❌ Skipping {candidate_driver} - no capacity for group {group}. Current: {current}, Capacity: {capacity}, Need: {num_dogs}")
                         capacity_ok = False
                         break
                 
                 if not capacity_ok:
                     continue
                 
-                # Calculate score with iteration-based thresholds (your exact logic)
-                same_group_threshold = 0.5 + (iteration * 0.5)
-                adjacent_group_threshold = 0.25 + (iteration * 0.25)
+                print(f"     ✅ {candidate_driver} is valid candidate")
                 
+                # All hard constraints passed - now calculate preference score
                 score = 0
                 
-                # Same group match (highest priority)
-                for group in needed_groups:
-                    if group in nearby_groups:
-                        score += 10
-                        break
-                
-                # Adjacent group match
-                if score == 0:  # Only if no same group match
-                    for group in needed_groups:
-                        if self.is_adjacent_group(group, nearby_groups):
-                            score += 5
-                            break
-                
-                # Apply thresholds
-                if score >= 10 and score < same_group_threshold * 10:
-                    continue
-                elif score >= 5 and score < adjacent_group_threshold * 10:
-                    continue
+                # Prefer exact group matches over adjacent
+                if exact_match:
+                    score += 10
+                    print(f"       🎯 Exact group match: +10")
+                elif adjacent_match:
+                    score += 5
+                    print(f"       🔗 Adjacent group match: +5")
                 
                 # Distance penalty
-                score -= distance * 2
+                score -= distance * 4
+                print(f"       📏 Distance penalty: -{distance * 4:.1f} ({distance:.1f} miles)")
                 
-                # Load penalty
+                # Proximity bonus for very close drivers
+                if distance <= 0.5:
+                    proximity_bonus = (0.5 - distance) * 10
+                    score += proximity_bonus
+                    print(f"       🎯 Proximity bonus: +{proximity_bonus:.1f} (only {distance:.1f} miles away)")
+                
+                # Load penalty - prefer less loaded drivers
                 total_load = sum(current_load.values())
                 load_penalty = total_load * 0.1
                 final_score = score - load_penalty
+                print(f"       ⚖️ Load penalty: -{load_penalty:.1f} (total load: {total_load})")
+                print(f"       🏆 Final score: {final_score:.2f}")
                 
-                if final_score > best_score:
-                    best_score = final_score
-                    best_candidate = {
-                        'to_driver': candidate_driver,
-                        'to_groups': needed_groups,
-                        'distance': distance,
-                        'score': final_score
-                    }
+                valid_candidates.append({
+                    'to_driver': candidate_driver,
+                    'to_groups': needed_groups,
+                    'distance': distance,
+                    'score': final_score,
+                    'exact_match': exact_match
+                })
             
-            if best_candidate:
-                print(f"   ✅ Found assignment: {best_candidate['to_driver']} (score: {best_candidate['score']:.2f})")
+            if valid_candidates:
+                # Sort by score (higher is better)
+                valid_candidates.sort(key=lambda x: x['score'], reverse=True)
+                best_candidate = valid_candidates[0]
+                
+                print(f"   ✅ Found {len(valid_candidates)} valid candidates")
+                print(f"   🏆 Best choice: {best_candidate['to_driver']} (score: {best_candidate['score']:.2f})")
                 return best_candidate
             
-            print(f"   No suitable candidates in iteration {iteration + 1}")
+            print(f"   ❌ No valid candidates in iteration {iteration + 1}")
         
         print(f"   ❌ No assignment found after {max_iterations} iterations")
         return None
@@ -533,8 +907,8 @@ class ProductionDogReassignmentSystem:
             return 4  # Lowest priority
     
     def reassign_dogs(self):
-        """Main reassignment algorithm (your exact logic)"""
-        print("\n🔄 Starting dog reassignment process...")
+        """Main reassignment algorithm with TOTAL MILES OPTIMIZATION"""
+        print("\n🔄 Starting OPTIMIZED dog reassignment process...")
         
         dogs_to_reassign = self.get_dogs_to_reassign()
         
@@ -544,23 +918,23 @@ class ProductionDogReassignmentSystem:
         
         print(f"🚨 Found {len(dogs_to_reassign)} callouts to process")
         
-        # Sort by priority (your exact logic)
-        dogs_to_reassign.sort(key=lambda x: self._get_reassignment_priority(x))
+        # STEP 1: Cluster nearby dogs for batch processing
+        clusters = self.cluster_callout_dogs(dogs_to_reassign)
         
+        # STEP 2: Optimize total system miles across all clusters
+        cluster_assignments, total_system_miles = self.optimize_total_system_miles(clusters)
+        
+        # STEP 3: Convert optimized assignments to standard format
         successful_reassignments = []
-        max_iterations = 5
-        iteration = 0
         
-        while dogs_to_reassign and iteration < max_iterations:
-            iteration += 1
-            print(f"\n🔄 Reassignment iteration {iteration}")
+        for cluster_assignment in cluster_assignments:
+            cluster = cluster_assignment['cluster']
             
-            dogs_assigned_this_iteration = []
-            
-            for dog_data in dogs_to_reassign:
-                reassignment = self.find_best_reassignment(dog_data)
+            if cluster_assignment['type'] == 'cluster':
+                # Batch assignment - all dogs in cluster go to one driver
+                driver = cluster_assignment['driver']
                 
-                if reassignment:
+                for dog_data in cluster:
                     # Create full reassignment record
                     full_reassignment = {
                         'dog_id': dog_data['dog_id'],
@@ -568,33 +942,88 @@ class ProductionDogReassignmentSystem:
                         'address': dog_data['address'],
                         'num_dogs': dog_data['num_dogs'],
                         'original_callout': dog_data['original_callout'],
-                        'to_driver': reassignment['to_driver'],
-                        'to_groups': reassignment['to_groups'],
-                        'distance': reassignment['distance'],
-                        'score': reassignment['score']
+                        'to_driver': driver,
+                        'to_groups': dog_data['needed_groups'],
+                        'distance': cluster_assignment.get('total_miles', 0),
+                        'score': 1000,  # High score for optimized assignment
+                        'assignment_type': 'cluster_optimized'
+                    }
+                    
+                    # Update internal state
+                    new_assignment_str = f"{driver}:{'&'.join(map(str, dog_data['needed_groups']))}"
+                    self.dog_assignments[dog_data['dog_id']] = {
+                        'dog_name': dog_data['dog_name'],
+                        'address': dog_data['address'],
+                        'num_dogs': dog_data['num_dogs'],
+                        'current_driver': driver,
+                        'current_groups': dog_data['needed_groups'],
+                        'assignment_str': new_assignment_str
                     }
                     
                     successful_reassignments.append(full_reassignment)
-                    dogs_assigned_this_iteration.append(dog_data)
+                    print(f"    ✅ CLUSTER ASSIGNED: {dog_data['dog_name']} → {driver}:{'&'.join(map(str, dog_data['needed_groups']))}")
+            
+            elif cluster_assignment['type'] == 'individual':
+                # Individual assignments (fallback)
+                for assignment_data in cluster_assignment.get('assignments', []):
+                    dog_data = assignment_data['dog']
+                    assignment = assignment_data['assignment']
                     
-                    print(f"✅ Assigned {dog_data['dog_name']} → {reassignment['to_driver']}:{{'&'.join(map(str, reassignment['to_groups']))}}")
-            
-            # Remove successfully assigned dogs
-            for dog in dogs_assigned_this_iteration:
-                dogs_to_reassign.remove(dog)
-            
-            if not dogs_assigned_this_iteration:
-                print("No more assignments possible in this iteration")
-                break
+                    # Create full reassignment record
+                    full_reassignment = {
+                        'dog_id': dog_data['dog_id'],
+                        'dog_name': dog_data['dog_name'],
+                        'address': dog_data['address'],
+                        'num_dogs': dog_data['num_dogs'],
+                        'original_callout': dog_data['original_callout'],
+                        'to_driver': assignment['to_driver'],
+                        'to_groups': assignment['to_groups'],
+                        'distance': assignment['distance'],
+                        'score': assignment['score'],
+                        'assignment_type': 'individual_fallback'
+                    }
+                    
+                    # Update internal state
+                    new_assignment_str = f"{assignment['to_driver']}:{'&'.join(map(str, assignment['to_groups']))}"
+                    self.dog_assignments[dog_data['dog_id']] = {
+                        'dog_name': dog_data['dog_name'],
+                        'address': dog_data['address'],
+                        'num_dogs': dog_data['num_dogs'],
+                        'current_driver': assignment['to_driver'],
+                        'current_groups': assignment['to_groups'],
+                        'assignment_str': new_assignment_str
+                    }
+                    
+                    successful_reassignments.append(full_reassignment)
+                    print(f"    ✅ INDIVIDUAL ASSIGNED: {dog_data['dog_name']} → {assignment['to_driver']}:{'&'.join(map(str, assignment['to_groups']))}")
         
-        print(f"\n📊 Reassignment Summary:")
+        print(f"\n📊 OPTIMIZED REASSIGNMENT SUMMARY:")
+        print(f"   🎯 TOTAL SYSTEM MILES MINIMIZED: {total_system_miles:.1f}")
         print(f"   ✅ Successfully assigned: {len(successful_reassignments)}")
-        print(f"   ❌ Could not assign: {len(dogs_to_reassign)}")
         
-        if dogs_to_reassign:
-            print(f"   Unassigned dogs:")
+        cluster_count = sum(1 for ca in cluster_assignments if ca['type'] == 'cluster')
+        individual_count = sum(len(ca.get('assignments', [])) for ca in cluster_assignments if ca['type'] == 'individual')
+        
+        print(f"   📦 Cluster assignments: {cluster_count}")
+        print(f"   🔄 Individual assignments: {individual_count}")
+        
+        if successful_reassignments:
+            print(f"\n🎉 MILE-OPTIMIZED RESULTS:")
+            for r in successful_reassignments:
+                groups_str = '&'.join(map(str, r['to_groups']))
+                assignment_type = r.get('assignment_type', 'unknown')
+                print(f"      {r['dog_name']} ({r['dog_id']}) → {r['to_driver']}:{groups_str} [{assignment_type}]")
+        
+        # Check for any unassigned dogs
+        assigned_dog_ids = set(r['dog_id'] for r in successful_reassignments)
+        all_callout_dog_ids = set(dog['dog_id'] for dog in dogs_to_reassign)
+        unassigned_dog_ids = all_callout_dog_ids - assigned_dog_ids
+        
+        if unassigned_dog_ids:
+            print(f"\n⚠️  UNASSIGNED DOGS:")
             for dog in dogs_to_reassign:
-                print(f"      - {dog['dog_name']} ({dog['dog_id']}) - needed {dog['original_callout']}")
+                if dog['dog_id'] in unassigned_dog_ids:
+                    print(f"      - {dog['dog_name']} ({dog['dog_id']}) - needed {dog['original_callout']}")
         
         return successful_reassignments
     
