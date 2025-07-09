@@ -631,16 +631,43 @@ class ProductionDogReassignmentSystem:
         """Optimally assign cluster dogs to minimize miles while respecting capacity limits"""
         print(f"\n🎯 OPTIMIZING cluster assignment for {len(cluster)} dogs...")
         
+        # DEBUG: Show each dog's details
+        print(f"   🔍 DEBUGGING CLUSTER DETAILS:")
+        total_cluster_dogs = 0
+        for i, dog in enumerate(cluster):
+            dog_count = dog['num_dogs']
+            needed_groups = dog['needed_groups']
+            print(f"      Dog {i+1}: {dog['dog_name']} ({dog['dog_id']}) - {dog_count} dogs, groups {needed_groups}")
+            total_cluster_dogs += dog_count
+        
+        print(f"   📊 Total cluster dogs calculated: {total_cluster_dogs}")
+        
         # Calculate total cluster requirements
-        total_cluster_dogs = sum(dog['num_dogs'] for dog in cluster)
         group_requirements = {'group1': 0, 'group2': 0, 'group3': 0}
         
         for dog in cluster:
+            dog_count = dog['num_dogs']
+            print(f"   🔍 Processing {dog['dog_name']}: {dog_count} dogs, groups {dog['needed_groups']}")
+            
             for group in dog['needed_groups']:
-                group_requirements[f'group{group}'] += dog['num_dogs']
+                if group in [1, 2, 3]:  # Only valid groups
+                    group_key = f'group{group}'
+                    group_requirements[group_key] += dog_count
+                    print(f"      Adding {dog_count} to {group_key}, new total: {group_requirements[group_key]}")
+                else:
+                    print(f"      ⚠️ Skipping invalid group: {group}")
         
-        print(f"   Total cluster: {total_cluster_dogs} dogs")
-        print(f"   Group requirements: G1={group_requirements['group1']}, G2={group_requirements['group2']}, G3={group_requirements['group3']}")
+        print(f"   📊 Final group requirements: G1={group_requirements['group1']}, G2={group_requirements['group2']}, G3={group_requirements['group3']}")
+        
+        # Quick validation
+        total_from_groups = sum(group_requirements.values())
+        print(f"   🔍 Validation: Total from groups = {total_from_groups}")
+        
+        if total_cluster_dogs < 0 or any(count < 0 for count in group_requirements.values()):
+            print(f"   🚨 ERROR: Negative counts detected!")
+            print(f"      Total dogs: {total_cluster_dogs}")
+            print(f"      Group requirements: {group_requirements}")
+            return []  # Return empty list to prevent further errors
         
         # Get all potential drivers (excluding callout drivers)
         working_drivers = set(data['current_driver'] for data in self.dog_assignments.values())
@@ -1181,7 +1208,8 @@ class ProductionDogReassignmentSystem:
         print(f"\n🔄 ROUTE OPTIMIZATION: Checking for outlier dogs that could be better placed...")
         
         if not reassignments:
-            return reassignments
+            print("✅ No reassignments to optimize - returning empty list")
+            return []  # Return empty list, not None
         
         # Get all drivers who received new assignments
         drivers_with_new_dogs = set(r['to_driver'] for r in reassignments)
