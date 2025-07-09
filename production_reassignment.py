@@ -144,7 +144,7 @@ class ProductionDogReassignmentSystem:
             return False
     
     def load_dog_assignments(self):
-        """Load dog assignments and detect callouts from Name column (G) being blank but gropu column (I) not blank"""
+        """Load dog assignments and detect callouts from Combined column (H) being blank but Callout column (K) having content"""
         try:
             response = requests.get(self.MAP_SHEET_URL)
             df = pd.read_csv(pd.io.common.StringIO(response.text))
@@ -160,61 +160,68 @@ class ProductionDogReassignmentSystem:
             callout_entries = []
             
             for _, row in df.iterrows():
-                # Get Dog ID 
-                dog_id = row.get('Dog ID')
+                # Get Dog ID from Column J (index 9)
+                dog_id = row.iloc[9] if len(row) > 9 else None
                 if pd.isna(dog_id) or str(dog_id).strip() == '':
                     continue
                 dog_id = str(dog_id).strip()
                 
-                # Get Name column (Column G) and gropu column (Column I)
-                name_col = row.get('Name', '')  # Column G
-                gropu_col = row.get('gropu', '')  # Column I - the group assignment
+                # Get Combined column (H = index 7) and Callout column (K = index 10)
+                combined_col = row.iloc[7] if len(row) > 7 else ''  # Column H (Combined)
+                callout_col = row.iloc[10] if len(row) > 10 else ''  # Column K (Callout)
                 
-                # Check for callout: Name is blank but gropu is not blank
-                name_is_blank = pd.isna(name_col) or str(name_col).strip() == ''
-                gropu_not_blank = not (pd.isna(gropu_col) or str(gropu_col).strip() == '')
+                # Check for callout: Combined is blank but Callout has content
+                combined_is_blank = pd.isna(combined_col) or str(combined_col).strip() == ''
+                callout_has_content = not (pd.isna(callout_col) or str(callout_col).strip() == '')
                 
-                is_callout = name_is_blank and gropu_not_blank
+                is_callout = combined_is_blank and callout_has_content
                 
                 if is_callout:
-                    # This is a callout - needs to be filled
+                    # This is a callout - parse the callout assignment (e.g., "Nate:1&2")
                     callouts_found += 1
-                    group_assignment = str(gropu_col).strip()
+                    callout_assignment = str(callout_col).strip()
+                    
+                    # Parse the callout to get groups (e.g., "Nate:1&2" → groups [1,2])
+                    if ':' in callout_assignment:
+                        _, group_part = callout_assignment.split(':', 1)
+                        groups = self._parse_groups(group_part.strip())
+                    else:
+                        # Fallback if no colon - treat whole thing as group
+                        groups = self._parse_groups(callout_assignment)
                     
                     callout_entries.append({
                         'dog_id': dog_id,
-                        'group_assignment': group_assignment,
-                        'dog_name': str(row.get('Dog Name', '')).strip(),
-                        'address': str(row.get('Address', '')).strip()
+                        'group_assignment': '&'.join(map(str, groups)),  # Convert back to string
+                        'original_callout': callout_assignment,
+                        'dog_name': str(row.iloc[1] if len(row) > 1 else '').strip(),  # Dog Name (Column B)
+                        'address': str(row.iloc[0] if len(row) > 0 else '').strip()    # Address (Column A)
                     })
                     
-                    print(f"🚨 Callout detected: {dog_id} ({row.get('Dog Name', '')}) needs driver for groups {group_assignment}")
+                    print(f"🚨 Callout detected: {dog_id} ({row.iloc[1] if len(row) > 1 else ''}) needs replacement for {callout_assignment}")
                     continue
                 
-                # Regular assignment - get Today column
-                assignment = row.get('Today')
-                if pd.isna(assignment) or str(assignment).strip() == '':
-                    continue
-                assignment = str(assignment).strip()
+                # Regular assignment - get Combined column
+                assignment = str(combined_col).strip() if not pd.isna(combined_col) else ''
                 
                 # Skip if no valid assignment or if it's not a driver assignment
                 if not assignment or ':' not in assignment:
                     continue
                 
-                # Get number of dogs
+                # Get number of dogs from Column E (index 4)
                 num_dogs = 1
-                if 'Number of dogs' in row and not pd.isna(row['Number of dogs']):
-                    try:
-                        num_dogs = int(float(row['Number of dogs']))
-                    except (ValueError, TypeError):
-                        num_dogs = 1
+                try:
+                    num_dogs_val = row.iloc[4] if len(row) > 4 else 1
+                    if not pd.isna(num_dogs_val):
+                        num_dogs = int(float(num_dogs_val))
+                except (ValueError, TypeError):
+                    num_dogs = 1
                 
                 # Store regular assignment
                 self.dogs_going_today[dog_id] = {
                     'assignment': assignment,
                     'num_dogs': num_dogs,
-                    'address': str(row.get('Address', '')).strip(),
-                    'dog_name': str(row.get('Dog Name', '')).strip(),
+                    'address': str(row.iloc[0] if len(row) > 0 else '').strip(),    # Address (Column A)
+                    'dog_name': str(row.iloc[1] if len(row) > 1 else '').strip(),   # Dog Name (Column B)
                     'is_callout': False
                 }
                 assignments_found += 1
@@ -226,7 +233,7 @@ class ProductionDogReassignmentSystem:
             if callouts_found > 0:
                 print(f"🚨 Found {callouts_found} callouts that need drivers assigned:")
                 for callout in callout_entries[:5]:  # Show first 5
-                    print(f"   - {callout['dog_name']} ({callout['dog_id']}) needs groups {callout['group_assignment']}")
+                    print(f"   - {callout['dog_name']} ({callout['dog_id']}) needs replacement for {callout['original_callout']}")
                 if len(callout_entries) > 5:
                     print(f"   ... and {len(callout_entries) - 5} more")
             else:
@@ -324,7 +331,7 @@ class ProductionDogReassignmentSystem:
         return driver, sorted(list(set(groups)))  # Remove duplicates and sort
     
     def get_dogs_to_reassign(self):
-        """Find dogs that need driver assignment (callouts detected from blank Name column)"""
+        """Find dogs that need driver assignment (callouts detected from blank Combined column but content in Callout column)"""
         dogs_to_reassign = []
         
         for callout in self.callout_dogs:
@@ -503,7 +510,7 @@ class ProductionDogReassignmentSystem:
         return any(adj_group in nearby_groups for adj_group in adjacent_to_group)
     
     def reassign_dogs(self, max_iterations=5):
-        """Main assignment logic - assign drivers to callouts and handle any reassignments"""
+        """Main assignment logic - assign drivers to callouts (where Combined column is blank but Callout column has content)"""
         dogs_to_reassign = self.get_dogs_to_reassign()
         
         if not dogs_to_reassign:
@@ -659,7 +666,7 @@ class ProductionDogReassignmentSystem:
             return False
 
     def update_map_sheet_today_column(self, reassignments: List[Dict], spreadsheet) -> bool:
-        """Update the Name column (Column G) in the Map sheet with assigned drivers"""
+        """Update the Combined column (Column H) in the Map sheet with assigned drivers"""
         try:
             # Try different sheet names that might exist
             sheet_names_to_try = ["New districts Map 8", "Map", "Districts Map"]
@@ -678,40 +685,36 @@ class ProductionDogReassignmentSystem:
                 return False
             
             # Get all data to find the right rows
-            all_data = map_sheet.get_all_records()
+            all_data = map_sheet.get_all_values()  # Get raw values instead of records
             
             updates = []
             for r in reassignments:
                 dog_id = r['dog_id']
-                new_driver = r['to_driver']  # Just the driver name for Name column
+                new_assignment = f"{r['to_driver']}:{'&'.join(map(str, r['to_groups']))}"
                 
-                # Find the row for this dog
+                # Find the row for this dog (Dog ID is in column J = index 9)
                 for i, row in enumerate(all_data):
-                    if str(row.get('Dog ID', '')).strip() == str(dog_id).strip():
-                        row_number = i + 2  # +2 for header and 0-based index
+                    if i == 0:  # Skip header row
+                        continue
+                    if len(row) > 9 and str(row[9]).strip() == str(dog_id).strip():
+                        row_number = i + 1  # +1 for 1-based row numbering
                         
-                        # Find Name column (should be column G = 7th column)
-                        try:
-                            name_col = list(row.keys()).index('Name') + 1
-                            col_letter = chr(64 + name_col)  # Convert to letter
-                            
-                            updates.append({
-                                'range': f'{col_letter}{row_number}',
-                                'values': [[new_driver]]
-                            })
-                            
-                        except ValueError:
-                            print(f"⚠️ 'Name' column not found for Dog ID {dog_id}")
+                        # Combined column is H = column 8 (1-based)
+                        updates.append({
+                            'range': f'H{row_number}',
+                            'values': [[new_assignment]]
+                        })
                         break
             
             if updates:
                 map_sheet.batch_update(updates)
-                print(f"✅ Updated {len(updates)} driver assignments in Name column!")
+                print(f"✅ Updated {len(updates)} driver assignments in Combined column!")
                 
                 # Print what was updated for verification
-                print("\n📝 Updates made to Name column:")
+                print("\n📝 Updates made to Combined column:")
                 for r in reassignments:
-                    print(f"   {r['dog_id']} ({r['dog_name']}): {r['to_driver']}")
+                    new_assignment = f"{r['to_driver']}:{'&'.join(map(str, r['to_groups']))}"
+                    print(f"   {r['dog_id']} ({r['dog_name']}): {new_assignment}")
             
             return True
             
