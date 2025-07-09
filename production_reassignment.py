@@ -806,7 +806,9 @@ class ProductionDogReassignmentSystem:
             # Use new smart partial assignment
             optimal_assignments = self.optimize_cluster_assignment(cluster)
             
-            if optimal_assignments:
+            print(f"   🔍 DEBUG: optimal_assignments returned: {len(optimal_assignments) if optimal_assignments else 0} assignments")
+            
+            if optimal_assignments and len(optimal_assignments) > 0:
                 cluster_miles = 0
                 cluster_assignment = {
                     'cluster': cluster,
