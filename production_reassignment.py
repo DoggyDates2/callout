@@ -193,7 +193,7 @@ class ProductionDogReassignmentSystem:
                     # Get other data
                     dog_name = row.iloc[1] if len(row) > 1 else ''  # Column B
                     address = row.iloc[0] if len(row) > 0 else ''   # Column A
-                    num_dogs = row.iloc[4] if len(row) > 4 else 1   # Column E
+                    num_dogs = row.iloc[5] if len(row) > 5 else 1   # Column F (Number of dogs)
                     
                     # Handle num_dogs
                     try:
@@ -1591,10 +1591,18 @@ def main():
     reassignments = system.reassign_dogs()
     
     # Write results back to Google Sheets
-    if system.write_results_to_sheets(reassignments):
+    reassignments = system.reassign_dogs()
+    
+    # Ensure reassignments is always a list, never None
+    if reassignments is None:
+        reassignments = []
+    
+    if reassignments and system.write_results_to_sheets(reassignments):
         print(f"\n🎉 SUCCESS! Processed {len(reassignments)} callout assignments")
+    elif reassignments:
+        print(f"\n❌ Failed to write {len(reassignments)} results to Google Sheets")
     else:
-        print(f"\n❌ Failed to write results to Google Sheets")
+        print(f"\n✅ No callout assignments needed - all drivers available or no valid assignments found")
 
 
 if __name__ == "__main__":
