@@ -51,7 +51,7 @@ jobs:
         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
     
     - name: Run Dog Reassignment
-      run: python dog_reassignment.py
+      run: python production_reassignment.py
       env:
         GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
         FORCE_RUN: ${{ github.event.inputs.force_run }}
