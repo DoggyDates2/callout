@@ -481,18 +481,23 @@ class ProductionDogReassignmentSystem:
         return clusters
     
     def find_cluster_capable_drivers(self, cluster):
-        """Find drivers who can handle an entire cluster of dogs"""
+        """Find drivers who can handle an entire cluster of dogs - WITH STRICT CAPACITY CHECKING"""
         print(f"\n🔍 Finding drivers capable of handling cluster of {len(cluster)} dogs...")
         
-        # Calculate total dogs and required groups for the cluster
-        total_dogs_needed = sum(dog['num_dogs'] for dog in cluster)
+        # Calculate total dogs needed PER GROUP for the cluster
+        group_dog_counts = {'group1': 0, 'group2': 0, 'group3': 0}
         all_required_groups = set()
         
         for dog in cluster:
-            all_required_groups.update(dog['needed_groups'])
+            dog_count = dog['num_dogs']
+            for group in dog['needed_groups']:
+                group_key = f'group{group}'
+                group_dog_counts[group_key] += dog_count
+                all_required_groups.add(group)
         
         required_groups = list(all_required_groups)
-        print(f"   Total dogs: {total_dogs_needed}, Required groups: {required_groups}")
+        print(f"   Cluster needs: Group1={group_dog_counts['group1']}, Group2={group_dog_counts['group2']}, Group3={group_dog_counts['group3']}")
+        print(f"   Required groups: {required_groups}")
         
         # Get cluster center (average position) for distance calculations
         cluster_center_distances = {}
@@ -534,19 +539,27 @@ class ProductionDogReassignmentSystem:
                 print(f"   ❌ Skipping {driver} - they called out")
                 continue
             
-            # Check capacity for all required groups
+            # CRITICAL FIX: Check capacity for each group individually
             current_load = self.calculate_driver_load(driver)
             driver_capacity = self.driver_capacities.get(driver, {'group1': 9, 'group2': 9, 'group3': 9})
+            
+            print(f"   🔍 Checking {driver}:")
+            print(f"      Current load: Group1={current_load.get('group1', 0)}, Group2={current_load.get('group2', 0)}, Group3={current_load.get('group3', 0)}")
+            print(f"      Driver capacity: Group1={driver_capacity.get('group1', 9)}, Group2={driver_capacity.get('group2', 9)}, Group3={driver_capacity.get('group3', 9)}")
             
             capacity_ok = True
             for group in required_groups:
                 group_key = f'group{group}'
                 current = current_load.get(group_key, 0)
                 capacity = driver_capacity.get(group_key, 9)
-                if current + total_dogs_needed > capacity:
-                    print(f"   ❌ {driver} - insufficient capacity for group {group}: {current}+{total_dogs_needed} > {capacity}")
+                cluster_needs = group_dog_counts[group_key]
+                
+                if current + cluster_needs > capacity:
+                    print(f"      ❌ CAPACITY EXCEEDED for {group_key}: current({current}) + cluster({cluster_needs}) = {current + cluster_needs} > capacity({capacity})")
                     capacity_ok = False
                     break
+                else:
+                    print(f"      ✅ {group_key} OK: current({current}) + cluster({cluster_needs}) = {current + cluster_needs} ≤ capacity({capacity})")
             
             if not capacity_ok:
                 continue
@@ -562,7 +575,7 @@ class ProductionDogReassignmentSystem:
                 exact_match = required_group in driver_groups
                 adjacent_match = any(self.is_adjacent_group(required_group, [g]) for g in driver_groups)
                 if not (exact_match or adjacent_match):
-                    print(f"   ❌ {driver} - no compatibility for group {required_group}. Has: {list(driver_groups)}")
+                    print(f"      ❌ {driver} - no compatibility for group {required_group}. Has: {list(driver_groups)}")
                     group_compatible = False
                     break
             
@@ -583,16 +596,21 @@ class ProductionDogReassignmentSystem:
                     min_distance_to_cluster = min(min_distance_to_cluster, distance)
             
             if min_distance_to_cluster > 3.0:  # Hard 3-mile limit
-                print(f"   ❌ {driver} - too far from cluster: {min_distance_to_cluster:.1f} miles")
+                print(f"      ❌ {driver} - too far from cluster: {min_distance_to_cluster:.1f} miles")
                 continue
             
-            print(f"   ✅ {driver} can handle cluster: capacity OK, groups compatible, {min_distance_to_cluster:.1f} miles")
+            print(f"      ✅ {driver} CAN handle cluster: all capacity constraints met, {min_distance_to_cluster:.1f} miles")
             
             capable_drivers.append({
                 'driver': driver,
                 'distance_to_cluster': min_distance_to_cluster,
                 'current_load': dict(current_load),
-                'driver_groups': list(driver_groups)
+                'driver_groups': list(driver_groups),
+                'projected_load': {
+                    'group1': current_load.get('group1', 0) + group_dog_counts['group1'],
+                    'group2': current_load.get('group2', 0) + group_dog_counts['group2'],
+                    'group3': current_load.get('group3', 0) + group_dog_counts['group3']
+                }
             })
         
         return capable_drivers
