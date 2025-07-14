@@ -1,5 +1,5 @@
-# production_reassignment.py
-# COMPLETE FIXED VERSION: Distance-first assignment with greedy walk optimization
+# Enhanced production_reassignment.py with multiple ordering strategies
+# Tries different assignment orders to find the best global solution
 
 import pandas as pd
 import numpy as np
@@ -274,7 +274,7 @@ class DogReassignmentSystem:
             return []
 
     def get_distance(self, dog1_id: str, dog2_id: str) -> float:
-        """FIXED: Get distance between two dogs using the distance matrix"""
+        """Get distance between two dogs using the distance matrix"""
         try:
             if self.distance_matrix is None:
                 return float('inf')
@@ -335,29 +335,122 @@ class DogReassignmentSystem:
         
         return load
 
-    def _order_by_difficulty(self, dogs_to_reassign):
-        """Order dogs by difficulty: multi-group and multi-dog first"""
-        def difficulty_score(dog):
+    def analyze_dog_constraints(self, dogs_to_reassign, current_assignments):
+        """NEW: Analyze how many viable driver options each dog has"""
+        print(f"\n🔍 ANALYZING ASSIGNMENT CONSTRAINTS for {len(dogs_to_reassign)} dogs...")
+        
+        dog_options = []
+        
+        for dog in dogs_to_reassign:
+            viable_drivers = []
+            
+            # Find all drivers with capacity and within range
+            for assignment in current_assignments:
+                driver = assignment['driver']
+                
+                # Calculate distance to this dog
+                distance = self.get_distance(dog['dog_id'], assignment['dog_id'])
+                
+                # Skip if too far or invalid
+                if distance > self.MAX_DISTANCE or distance >= self.EXCLUSION_DISTANCE:
+                    continue
+                
+                # Check if this driver has capacity in ALL needed groups
+                current_load = self.calculate_driver_load(driver, current_assignments)
+                has_capacity = True
+                
+                for group in dog['needed_groups']:
+                    group_key = f'group{group}'
+                    current = current_load.get(group_key, 0)
+                    max_cap = self.driver_capacities.get(driver, {}).get(group_key, 0)
+                    needed = dog['num_dogs']
+                    
+                    if current + needed > max_cap:
+                        has_capacity = False
+                        break
+                
+                if has_capacity:
+                    viable_drivers.append({
+                        'driver': driver,
+                        'distance': distance,
+                        'via_dog': assignment['dog_name']
+                    })
+            
+            # Remove duplicates (same driver multiple times) - keep closest
+            driver_best_distance = {}
+            for candidate in viable_drivers:
+                driver = candidate['driver']
+                if driver not in driver_best_distance or candidate['distance'] < driver_best_distance[driver]['distance']:
+                    driver_best_distance[driver] = candidate
+            
+            unique_options = list(driver_best_distance.values())
+            
+            dog_options.append({
+                'dog': dog,
+                'viable_options': len(unique_options),
+                'best_options': sorted(unique_options, key=lambda x: x['distance'])[:3],  # Top 3 closest
+                'min_distance': min([opt['distance'] for opt in unique_options]) if unique_options else float('inf')
+            })
+        
+        # Sort and display constraint analysis
+        dog_options.sort(key=lambda x: (x['viable_options'], x['min_distance']))
+        
+        print(f"📊 CONSTRAINT ANALYSIS (most constrained first):")
+        for i, option in enumerate(dog_options):
+            dog = option['dog']
+            options_count = option['viable_options']
+            min_dist = option['min_distance']
+            
+            constraint_emoji = "🚨" if options_count == 0 else "⚠️" if options_count == 1 else "🟡" if options_count <= 3 else "🟢"
+            
+            print(f"   {i+1:2d}. {constraint_emoji} {dog['dog_name']}: {options_count} viable drivers")
+            print(f"       Groups: {dog['needed_groups']}, Dogs: {dog['num_dogs']}")
+            
+            if options_count > 0:
+                print(f"       Closest: {min_dist:.1f}mi")
+                for j, opt in enumerate(option['best_options'][:2]):  # Show top 2
+                    print(f"         {j+1}. {opt['driver']} - {opt['distance']:.1f}mi via {opt['via_dog']}")
+            else:
+                print(f"       ❌ NO VIABLE OPTIONS")
+            print()
+        
+        return dog_options
+
+    def create_ordering_strategies(self, dog_constraints):
+        """NEW: Create different ordering strategies for assignment"""
+        
+        strategies = {}
+        
+        # Strategy 1: Most Constrained First (fewest options first)
+        most_constrained = sorted(dog_constraints, key=lambda x: (x['viable_options'], x['min_distance']))
+        strategies['most_constrained'] = [opt['dog'] for opt in most_constrained]
+        
+        # Strategy 2: Least Constrained First (most options first) 
+        least_constrained = sorted(dog_constraints, key=lambda x: (-x['viable_options'], x['min_distance']))
+        strategies['least_constrained'] = [opt['dog'] for opt in least_constrained]
+        
+        # Strategy 3: Shortest Distance First
+        shortest_distance = sorted(dog_constraints, key=lambda x: (x['min_distance'], x['viable_options']))
+        strategies['shortest_distance'] = [opt['dog'] for opt in shortest_distance]
+        
+        # Strategy 4: Difficulty First (original approach)
+        def difficulty_score(dog_constraint):
+            dog = dog_constraint['dog']
             score = 0
-            
-            # Multi-group assignments are harder (need capacity in multiple groups)
             if len(dog['needed_groups']) > 1:
-                score += len(dog['needed_groups']) * 100  # 200 for 2&3, 300 for 1&2&3
-            
-            # Multi-dog households are harder (need more capacity)
+                score += len(dog['needed_groups']) * 100
             if dog['num_dogs'] > 1:
-                score += dog['num_dogs'] * 50  # 100 for 2 dogs, 150 for 3 dogs
-            
+                score += dog['num_dogs'] * 50
             return score
         
-        sorted_dogs = sorted(dogs_to_reassign, key=difficulty_score, reverse=True)
+        difficulty_first = sorted(dog_constraints, key=difficulty_score, reverse=True)
+        strategies['difficulty_first'] = [opt['dog'] for opt in difficulty_first]
         
-        print("📋 Processing order (hardest first):")
-        for i, dog in enumerate(sorted_dogs):
-            groups_str = "&".join(map(str, dog['needed_groups']))
-            print(f"   {i+1}. {dog['dog_name']} - Groups:{groups_str}, Dogs:{dog['num_dogs']} (difficulty: {difficulty_score(dog)})")
+        # Strategy 5: Hybrid - Most constrained + difficulty
+        hybrid = sorted(dog_constraints, key=lambda x: (x['viable_options'], -difficulty_score(x), x['min_distance']))
+        strategies['hybrid'] = [opt['dog'] for opt in hybrid]
         
-        return sorted_dogs
+        return strategies
 
     def _try_greedy_walk(self, callout_dog, current_assignments):
         """Try to make space by moving an existing dog to a very close alternative"""
@@ -449,30 +542,22 @@ class DogReassignmentSystem:
                     })
         
         if not potential_moves:
-            print(f"         ❌ No greedy walk options found")
             return None
         
         # Sort by move distance - prefer shortest moves
         potential_moves.sort(key=lambda x: x['move_distance'])
         best_move = potential_moves[0]
         
-        print(f"         🎯 Found greedy walk option:")
-        print(f"           Move {best_move['dog_to_move']['dog_name']} from {best_move['original_driver']} → {best_move['new_driver']}")
-        print(f"           Distance: {best_move['move_distance']:.1f}mi via {best_move['via_dog']}")
-        print(f"           This frees space in {best_move['original_driver']} for {callout_dog['dog_name']}")
-        
         return best_move
 
-    def _run_greedy_assignment_with_order(self, ordered_dogs):
-        """FIXED: Always choose closest driver with capacity, with greedy walk fallback"""
-        print("   🎯 DISTANCE-FIRST assignment with greedy walk optimization")
-        print("   📏 Priority: Closest driver wins")
-        print("   🚶 Fallback: Move existing dogs to make space")
+    def _run_assignment_with_strategy(self, ordered_dogs, strategy_name):
+        """Run assignment algorithm with a specific dog ordering strategy"""
+        print(f"\n   🎯 Running strategy: {strategy_name.upper()}")
         
         assignments = []
-        moves_made = []  # Track greedy walk moves
+        moves_made = []
         
-        # Build dynamic list of current assignments (will be updated as we assign)
+        # Build dynamic list of current assignments
         current_assignments = []
         
         # Start with existing assignments
@@ -491,12 +576,8 @@ class DogReassignmentSystem:
                     'num_dogs': assignment['num_dogs']
                 })
         
-        print(f"       📊 Starting with {len(current_assignments)} existing assignments")
-        
-        # Process each callout dog in difficulty order
+        # Process each callout dog in the given order
         for callout_dog in ordered_dogs:
-            print(f"\n   🐕 Processing {callout_dog['dog_name']} (Groups: {callout_dog['needed_groups']}, Dogs: {callout_dog['num_dogs']})")
-            
             # Find ALL drivers with capacity, calculate distances to their dogs
             candidate_drivers = []
             
@@ -513,7 +594,6 @@ class DogReassignmentSystem:
                 # Check if this driver has capacity in ALL needed groups
                 current_load = self.calculate_driver_load(driver, current_assignments)
                 has_capacity = True
-                capacity_check = []
                 
                 for group in callout_dog['needed_groups']:
                     group_key = f'group{group}'
@@ -521,19 +601,16 @@ class DogReassignmentSystem:
                     max_cap = self.driver_capacities.get(driver, {}).get(group_key, 0)
                     needed = callout_dog['num_dogs']
                     
-                    if current + needed <= max_cap:
-                        capacity_check.append(f"G{group}:✅")
-                    else:
-                        capacity_check.append(f"G{group}:❌")
+                    if current + needed > max_cap:
                         has_capacity = False
+                        break
                 
                 if has_capacity:
                     candidate_drivers.append({
                         'driver': driver,
                         'distance': distance,
                         'via_dog': assignment['dog_name'],
-                        'via_dog_id': assignment['dog_id'],
-                        'capacity_check': capacity_check
+                        'via_dog_id': assignment['dog_id']
                     })
             
             if candidate_drivers:
@@ -549,26 +626,17 @@ class DogReassignmentSystem:
                 # Sort by distance - CLOSEST WINS!
                 unique_candidates.sort(key=lambda x: x['distance'])
                 
-                print(f"       📏 Found {len(unique_candidates)} drivers with capacity (closest first):")
-                for i, candidate in enumerate(unique_candidates[:3]):  # Show top 3
-                    rank = "🥇" if i == 0 else "🥈" if i == 1 else "🥉"
-                    print(f"         {rank} {candidate['driver']} - {candidate['distance']:.1f}mi via {candidate['via_dog']}")
-                
                 # Pick the closest driver
                 winner = unique_candidates[0]
                 driver = winner['driver']
                 distance = winner['distance']
                 
-                print(f"       🏆 WINNER: {driver} (closest at {distance:.1f}mi)")
-                
             else:
                 # No drivers with available capacity - try greedy walk
-                print(f"       🚫 No drivers with available capacity")
-                
                 greedy_move = self._try_greedy_walk(callout_dog, current_assignments)
                 
                 if not greedy_move:
-                    print(f"       ❌ NO ASSIGNMENT POSSIBLE for {callout_dog['dog_name']}")
+                    # Failed to assign this dog
                     continue
                 
                 # Execute the greedy walk move
@@ -592,19 +660,12 @@ class DogReassignmentSystem:
                     'reason': f"make_space_for_{callout_dog['dog_name']}"
                 })
                 
-                print(f"         ✅ Moved {dog_to_move['dog_name']} from {original_driver} → {new_driver}")
-                
                 # Now assign the callout dog to the freed space
                 driver = original_driver
                 distance = self.get_distance(callout_dog['dog_id'], dog_to_move['dog_id'])
-                
-                print(f"         🎯 Space freed! Assigning {callout_dog['dog_name']} → {driver}")
             
             # Create the assignment
             new_assignment = f"{driver}:{callout_dog['full_assignment_string']}"
-            
-            print(f"         📝 {callout_dog['dog_name']} → {new_assignment}")
-            print(f"         📏 Distance: {distance:.1f}mi")
             
             # Record the assignment
             assignments.append({
@@ -613,9 +674,7 @@ class DogReassignmentSystem:
                 'new_assignment': new_assignment,
                 'driver': driver,
                 'distance': distance,
-                'assignment_type': 'regular',
-                'match_type': 'closest_distance',
-                'reason': f"closest_available_{distance:.1f}mi"
+                'assignment_type': 'regular'
             })
             
             # Update current_assignments with the new dog
@@ -626,25 +685,15 @@ class DogReassignmentSystem:
                 'needed_groups': callout_dog['needed_groups'],
                 'num_dogs': callout_dog['num_dogs']
             })
-            
-            print(f"         📊 Total assignments now: {len(current_assignments)}")
-        
-        # Show greedy walk moves if any were made
-        if moves_made:
-            print(f"\n🚶 GREEDY WALK MOVES MADE ({len(moves_made)}):")
-            for move in moves_made:
-                print(f"   🔄 {move['dog_name']} moved from {move['from_driver']} → {move['to_driver']} ({move['distance']:.1f}mi)")
-                print(f"      Reason: {move['reason']}")
         
         return assignments, moves_made
 
-    def reassign_dogs_smart_optimization(self):
-        """Main reassignment function with correct difficulty ordering and distance-first logic"""
-        print("\n🔄 Starting SMART DISTANCE-FIRST ASSIGNMENT...")
-        print("🎯 Order: Hardest dogs first (multi-group + multi-dog)")
-        print("📏 Logic: Always choose closest driver with capacity")
-        print("🚶 Fallback: Greedy walk to make space")
-        print("🔄 State: Update immediately after each assignment")
+    def reassign_dogs_multi_strategy_optimization(self):
+        """NEW: Try multiple ordering strategies and pick the best result"""
+        print("\n🔄 Starting MULTI-STRATEGY OPTIMIZATION...")
+        print("🧠 Strategy: Try different assignment orders and pick the best global result")
+        print("📊 Evaluation: Total assignments + average distance + greedy walk moves")
+        print("=" * 80)
         
         dogs_to_reassign = self.get_dogs_to_reassign()
         
@@ -655,58 +704,92 @@ class DogReassignmentSystem:
         num_dogs = len(dogs_to_reassign)
         print(f"📊 Found {num_dogs} callout dogs")
         
-        # Show current driver capacity status
-        print(f"\n📊 CURRENT DRIVER CAPACITY:")
-        for driver, capacity in self.driver_capacities.items():
-            current_load = self.calculate_driver_load(driver)
-            available = {}
-            for group in [1, 2, 3]:
-                group_key = f'group{group}'
-                available[group_key] = capacity.get(group_key, 0) - current_load.get(group_key, 0)
+        # Build initial current assignments for constraint analysis
+        current_assignments = []
+        for assignment in self.dog_assignments:
+            combined = assignment.get('combined', '')
+            if combined and ':' in combined:
+                driver = combined.split(':', 1)[0].strip()
+                assignment_string = combined.split(':', 1)[1].strip()
+                groups = self._extract_groups_for_capacity_check(assignment_string)
+                
+                current_assignments.append({
+                    'dog_id': assignment['dog_id'],
+                    'dog_name': assignment['dog_name'],
+                    'driver': driver,
+                    'needed_groups': groups,
+                    'num_dogs': assignment['num_dogs']
+                })
+        
+        # Analyze constraints for each dog
+        dog_constraints = self.analyze_dog_constraints(dogs_to_reassign, current_assignments)
+        
+        # Create different ordering strategies
+        strategies = self.create_ordering_strategies(dog_constraints)
+        
+        print(f"\n🧪 TESTING {len(strategies)} ORDERING STRATEGIES...")
+        
+        strategy_results = {}
+        
+        for strategy_name, ordered_dogs in strategies.items():
+            print(f"\n{'='*60}")
+            print(f"🧪 Testing Strategy: {strategy_name.upper()}")
+            print(f"📋 Order: {', '.join([dog['dog_name'] for dog in ordered_dogs[:5]])}{'...' if len(ordered_dogs) > 5 else ''}")
             
-            if any(available.values()):  # Only show drivers with availability
-                print(f"   🚗 {driver}: G1:{available['group1']}, G2:{available['group2']}, G3:{available['group3']}")
-        
-        start_time = time.time()
-        
-        # Order by difficulty (hardest first)
-        ordered_dogs = self._order_by_difficulty(dogs_to_reassign)
-        
-        # Run assignment with corrected logic
-        assignments, moves_made = self._run_greedy_assignment_with_order(ordered_dogs)
-        
-        elapsed_time = time.time() - start_time
-        
-        # Show results
-        print(f"\n🏆 ASSIGNMENT RESULTS:")
-        print(f"   ⏱️ Processing time: {elapsed_time:.1f} seconds")
-        print(f"   📊 Dogs assigned: {len(assignments)}/{num_dogs}")
-        if moves_made:
-            print(f"   🚶 Greedy walk moves: {len(moves_made)}")
-        
-        if assignments:
-            print(f"\n🎉 SUCCESSFUL ASSIGNMENTS:")
-            for assignment in assignments:
-                print(f"      ✅ {assignment['dog_name']} → {assignment['new_assignment']}")
-                print(f"         📏 {assignment['distance']:.1f}mi")
+            start_time = time.time()
+            assignments, moves = self._run_assignment_with_strategy(ordered_dogs, strategy_name)
+            elapsed_time = time.time() - start_time
             
-            # Validate assignments
-            validated_assignments = []
-            for assignment in assignments:
-                new_assignment = assignment.get('new_assignment', '')
-                if new_assignment and ':' in new_assignment and not new_assignment.endswith('x'):
-                    validated_assignments.append(assignment)
-                else:
-                    print(f"   ❌ INVALID: {assignment.get('dog_name')} has bad assignment: {new_assignment}")
+            # Calculate strategy score
+            total_assigned = len(assignments)
+            avg_distance = np.mean([a['distance'] for a in assignments]) if assignments else float('inf')
+            total_moves = len(moves)
             
-            print(f"\n🔒 VALIDATION: {len(validated_assignments)}/{len(assignments)} assignments are valid")
+            # Composite score: prioritize more assignments, then shorter distances, then fewer moves
+            score = (total_assigned * 1000) - (avg_distance * 10) - (total_moves * 5)
             
-            # Store moves for potential writing to sheets
-            self.greedy_moves_made = moves_made
+            strategy_results[strategy_name] = {
+                'assignments': assignments,
+                'moves': moves,
+                'total_assigned': total_assigned,
+                'avg_distance': avg_distance,
+                'total_moves': total_moves,
+                'score': score,
+                'elapsed_time': elapsed_time
+            }
             
-            return validated_assignments
+            print(f"   📊 Results: {total_assigned}/{num_dogs} assigned, avg {avg_distance:.1f}mi, {total_moves} moves")
+            print(f"   🏆 Score: {score:.1f} (higher = better)")
+            print(f"   ⏱️ Time: {elapsed_time:.1f}s")
         
-        return []
+        # Find the best strategy
+        best_strategy = max(strategy_results.items(), key=lambda x: x[1]['score'])
+        best_name, best_result = best_strategy
+        
+        print(f"\n🏆 WINNING STRATEGY: {best_name.upper()}")
+        print(f"   📊 {best_result['total_assigned']}/{num_dogs} dogs assigned")
+        print(f"   📏 Average distance: {best_result['avg_distance']:.1f} miles")
+        print(f"   🚶 Greedy walk moves: {best_result['total_moves']}")
+        print(f"   🏆 Final score: {best_result['score']:.1f}")
+        
+        # Show comparison table
+        print(f"\n📊 STRATEGY COMPARISON:")
+        print(f"{'Strategy':<18} {'Assigned':<8} {'Avg Dist':<8} {'Moves':<6} {'Score':<8}")
+        print("-" * 55)
+        
+        for name, result in sorted(strategy_results.items(), key=lambda x: x[1]['score'], reverse=True):
+            assigned_str = f"{result['total_assigned']}/{num_dogs}"
+            avg_dist_str = f"{result['avg_distance']:.1f}mi" if result['avg_distance'] != float('inf') else "∞"
+            score_str = f"{result['score']:.0f}"
+            winner_mark = "🏆 " if name == best_name else "   "
+            
+            print(f"{winner_mark}{name:<15} {assigned_str:<8} {avg_dist_str:<8} {result['total_moves']:<6} {score_str:<8}")
+        
+        # Store moves for potential writing to sheets
+        self.greedy_moves_made = best_result['moves']
+        
+        # Return the best assignments
+        return best_result['assignments']
 
     def write_results_to_sheets(self, reassignments):
         """Write reassignment results and greedy walk moves back to Google Sheets"""
@@ -867,18 +950,17 @@ class DogReassignmentSystem:
             print(f"\n📤 Writing {len(updates)} updates to Google Sheets...")
             worksheet.batch_update(updates)
             
-            success_msg = f"✅ Successfully updated {updates_count} assignments!"
+            success_msg = f"✅ Successfully updated {updates_count} assignments using multi-strategy optimization!"
             if hasattr(self, 'greedy_moves_made') and self.greedy_moves_made:
                 success_msg += f" (including {len(self.greedy_moves_made)} greedy walk moves)"
             
             print(success_msg)
-            print(f"🎯 Used distance-first logic with greedy walk optimization")
             
             # Send Slack notification
             slack_webhook = os.environ.get('SLACK_WEBHOOK_URL')
             if slack_webhook:
                 try:
-                    message = f"🐕 Dog Reassignment Complete: {updates_count} assignments updated using distance-first + greedy walk"
+                    message = f"🐕 Dog Reassignment Complete: {updates_count} assignments updated using multi-strategy optimization"
                     slack_message = {"text": message}
                     response = requests.post(slack_webhook, json=slack_message, timeout=10)
                     if response.status_code == 200:
@@ -896,11 +978,10 @@ class DogReassignmentSystem:
 
 def main():
     """Main function to run the dog reassignment system"""
-    print("🚀 Production Dog Reassignment System - DISTANCE-FIRST + GREEDY WALK")
-    print("🎯 Hardest dogs first: Multi-group and multi-dog assignments")
-    print("📏 Always choose closest driver with capacity")
-    print("🚶 Greedy walk: Move existing dogs ≤0.5mi to make space")
-    print("🔄 State updates: Immediate after each assignment")
+    print("🚀 Enhanced Dog Reassignment System - MULTI-STRATEGY OPTIMIZATION")
+    print("🧠 Analyzes constraint patterns and tests multiple assignment orders")
+    print("🏆 Automatically selects the strategy that produces the best global result")
+    print("📊 Evaluation criteria: Total assignments + Average distance + Moves")
     print("=" * 80)
     
     # Initialize system
@@ -926,10 +1007,10 @@ def main():
         print("❌ Failed to load driver capacities")
         return
     
-    # Run the smart optimization assignment
+    # Run the multi-strategy optimization
     print("\n🔄 Processing callout assignments...")
     
-    reassignments = system.reassign_dogs_smart_optimization()
+    reassignments = system.reassign_dogs_multi_strategy_optimization()
     
     # Ensure reassignments is always a list
     if reassignments is None:
@@ -939,8 +1020,7 @@ def main():
     if reassignments:
         write_success = system.write_results_to_sheets(reassignments)
         if write_success:
-            print(f"\n🎉 SUCCESS! Processed {len(reassignments)} callout assignments")
-            print(f"✅ Used distance-first logic with greedy walk optimization")
+            print(f"\n🎉 SUCCESS! Processed {len(reassignments)} callout assignments using optimal strategy")
         else:
             print(f"\n❌ Failed to write {len(reassignments)} results to Google Sheets")
     else:
