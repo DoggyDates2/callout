@@ -7,6 +7,8 @@ import requests
 import json
 import os
 from typing import Dict, List, Tuple
+import gspread
+from google.oauth2.service_account import Credentials
 
 class DogReassignmentSystem:
     def __init__(self):
@@ -32,7 +34,21 @@ class DogReassignmentSystem:
             if not service_account_json:
                 print("❌ GOOGLE_SERVICE_ACCOUNT_JSON environment variable not found")
                 return False
-                
+            
+            # Parse the JSON credentials
+            credentials_dict = json.loads(service_account_json)
+            
+            # Set up the credentials with proper scopes
+            scopes = [
+                'https://www.googleapis.com/auth/spreadsheets',
+                'https://www.googleapis.com/auth/drive'
+            ]
+            
+            credentials = Credentials.from_service_account_info(credentials_dict, scopes=scopes)
+            
+            # Initialize the gspread client
+            self.sheets_client = gspread.authorize(credentials)
+            
             print("✅ Google Sheets client setup successful")
             return True
             
@@ -943,17 +959,135 @@ class DogReassignmentSystem:
         try:
             print(f"\n📝 Writing {len(reassignments)} results to Google Sheets...")
             
-            # Note: In this version, we're not actually writing back to sheets
-            print("⚠️ Write functionality not implemented in this version")
-            print("📋 Results that would be written:")
+            if not hasattr(self, 'sheets_client') or not self.sheets_client:
+                print("❌ Google Sheets client not initialized")
+                return False
+            
+            # Extract sheet ID from your existing MAP_SHEET_URL
+            # "https://docs.google.com/spreadsheets/d/1mg8d5CLxSR54KhNUL8SpL5jzrGN-bghTsC9vxSK8lR0/export?format=csv&gid=267803750"
+            sheet_id = "1mg8d5CLxSR54KhNUL8SpL5jzrGN-bghTsC9vxSK8lR0"
+            
+            # Open the spreadsheet
+            spreadsheet = self.sheets_client.open_by_key(sheet_id)
+            
+            # Get the worksheet (try the specific gid first, then common names)
+            worksheet = None
+            try:
+                # Get all worksheets and find the one with gid 267803750
+                for ws in spreadsheet.worksheets():
+                    if str(ws.id) == "267803750":
+                        worksheet = ws
+                        break
+            except:
+                pass
+            
+            # Fallback to common sheet names if gid lookup failed
+            if not worksheet:
+                for sheet_name in ["Map", "Sheet1", "Dogs", "Assignments"]:
+                    try:
+                        worksheet = spreadsheet.worksheet(sheet_name)
+                        print(f"📋 Using sheet: {sheet_name}")
+                        break
+                    except:
+                        continue
+            
+            if not worksheet:
+                print("❌ Could not find the target worksheet")
+                return False
+            
+            # Get all data to understand the structure
+            all_data = worksheet.get_all_values()
+            if not all_data:
+                print("❌ No data found in worksheet")
+                return False
+            
+            header_row = all_data[0]
+            print(f"📋 Sheet has {len(all_data)} rows and columns: {header_row[:10]}...")  # Show first 10 columns
+            
+            # Find the Dog ID column
+            dog_id_col = None
+            
+            for i, header in enumerate(header_row):
+                header_clean = str(header).lower().strip()
+                if 'dog id' in header_clean:
+                    dog_id_col = i
+                    print(f"📍 Found Dog ID column at index {i}")
+                    break
+            
+            if dog_id_col is None:
+                print("❌ Could not find 'Dog ID' column")
+                return False
+            
+            # Always use Column H (Combined column) - index 7
+            target_col = 7
+            print(f"📍 Writing to Column H (Combined) at index {target_col}")
+            
+            # Prepare batch updates
+            updates = []
+            updates_count = 0
+            
+            print(f"\n🔍 Processing {len(reassignments)} reassignments...")
             
             for assignment in reassignments:
-                print(f"   {assignment['dog_id']}: {assignment['new_assignment']}")
+                dog_id = str(assignment['dog_id']).strip()
+                new_assignment = assignment['new_assignment']
+                
+                # Find the row for this dog ID
+                found = False
+                for row_idx in range(1, len(all_data)):  # Skip header row
+                    if dog_id_col < len(all_data[row_idx]):
+                        current_dog_id = str(all_data[row_idx][dog_id_col]).strip()
+                        
+                        if current_dog_id == dog_id:
+                            # Convert to A1 notation (row is 1-indexed, col is 1-indexed)
+                            cell_address = gspread.utils.rowcol_to_a1(row_idx + 1, target_col + 1)
+                            
+                            updates.append({
+                                'range': cell_address,
+                                'values': [[new_assignment]]
+                            })
+                            
+                            updates_count += 1
+                            print(f"  ✅ {dog_id} → {new_assignment} (cell {cell_address})")
+                            found = True
+                            break
+                
+                if not found:
+                    print(f"  ⚠️ Could not find row for dog ID: {dog_id}")
+            
+            if not updates:
+                print("❌ No valid updates to make")
+                return False
+            
+            # Execute batch update
+            print(f"\n📤 Sending {len(updates)} updates to Google Sheets...")
+            
+            # Use batch_update for efficiency
+            worksheet.batch_update(updates)
+            
+            print(f"✅ Successfully updated {updates_count} assignments in Google Sheets!")
+            
+            # Optional: Send Slack notification if webhook is configured
+            slack_webhook = os.environ.get('SLACK_WEBHOOK_URL')
+            if slack_webhook:
+                try:
+                    slack_message = {
+                        "text": f"🐕 Dog Reassignment Complete: Updated {updates_count} assignments in Google Sheets"
+                    }
+                    response = requests.post(slack_webhook, json=slack_message, timeout=10)
+                    if response.status_code == 200:
+                        print("📱 Slack notification sent")
+                    else:
+                        print(f"⚠️ Slack notification failed: {response.status_code}")
+                except Exception as e:
+                    print(f"⚠️ Could not send Slack notification: {e}")
             
             return True
             
         except Exception as e:
             print(f"❌ Error writing to sheets: {e}")
+            import traceback
+            print(f"🔍 Full error: {traceback.format_exc()}")
             return False
 
 def main():
@@ -963,11 +1097,13 @@ def main():
     
     # Initialize system
     system = DogReassignmentSystem()
+    
+    # Setup Google Sheets client for WRITING (reading still uses CSV URLs)
     if not system.setup_google_sheets_client():
-        print("❌ Failed to setup Google Sheets client")
+        print("❌ Failed to setup Google Sheets client for writing")
         return
     
-    # Load all data
+    # Load all data (your existing code)
     print("\n⬇️ Loading data from Google Sheets...")
     
     if not system.load_distance_matrix():
@@ -991,7 +1127,7 @@ def main():
     if reassignments is None:
         reassignments = []
     
-    # Write results
+    # Write results (NOW ACTUALLY WRITES!)
     if reassignments:
         write_success = system.write_results_to_sheets(reassignments)
         if write_success:
