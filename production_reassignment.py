@@ -27,7 +27,7 @@ class DogReassignmentSystem:
         self.EXACT_MATCH_MAX_DISTANCE = 3.0  # Exact group matches: 3 miles
         self.ADJACENT_MATCH_MAX_DISTANCE = 0.6  # Adjacent/compatible groups: 0.6 miles (much stricter)
         self.PARKING_EXACT_MAX_DISTANCE = 0.4  # Parking/field same groups: 0.4 miles (very restrictive)
-        self.PARKING_ADJACENT_MAX_DISTANCE = 0.2  # Parking/field adjacent groups: 0.2 miles (extremely restrictive)
+        self.PARKING_ADJACENT_MAX_DISTANCE = 0.4  # Parking/field adjacent groups: 0.4 miles (very restrictive)
         self.EXCLUSION_DISTANCE = 100.0  # Still recognize 100+ as "do not assign" placeholders
         
         # Data containers
