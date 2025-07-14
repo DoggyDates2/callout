@@ -1,5 +1,5 @@
 # production_reassignment.py
-# Complete dog reassignment system with multi-strategy route optimization
+# Complete dog reassignment system with smart optimization and 3-mile distance limit
 
 import pandas as pd
 import numpy as np
@@ -9,6 +9,11 @@ import os
 from typing import Dict, List, Tuple
 import gspread
 from google.oauth2.service_account import Credentials
+import itertools
+import time
+import random
+from copy import deepcopy
+import re
 
 class DogReassignmentSystem:
     def __init__(self):
@@ -17,10 +22,11 @@ class DogReassignmentSystem:
         self.DISTANCE_MATRIX_URL = "https://docs.google.com/spreadsheets/d/1421xCS86YH6hx0RcuZCyXkyBK_xl-VDSlXyDNvw09Pg/export?format=csv&gid=398422902"
         self.MAP_SHEET_URL = "https://docs.google.com/spreadsheets/d/1mg8d5CLxSR54KhNUL8SpL5jzrGN-bghTsC9vxSK8lR0/export?format=csv&gid=267803750"
         
-        # STRICTER DISTANCE LIMITS
-        self.MAX_DISTANCE = 2.0  # Reduced from 3.0 - stricter limit
-        self.EXACT_MATCH_MAX_DISTANCE = 1.5  # Even stricter for exact group matches
-        self.ADJACENT_MATCH_MAX_DISTANCE = 0.75  # Very strict for adjacent matches
+        # DISTANCE LIMITS - Much stricter (3 miles max)
+        self.MAX_DISTANCE = 3.0  # Hard limit: no assignments beyond 3 miles
+        self.EXACT_MATCH_MAX_DISTANCE = 3.0  # Same as max - within 3 miles
+        self.ADJACENT_MATCH_MAX_DISTANCE = 3.0  # Same limit for all
+        self.EXCLUSION_DISTANCE = 100.0  # Still recognize 100+ as "do not assign" placeholders
         
         # Data containers
         self.distance_matrix = None
@@ -204,7 +210,7 @@ class DogReassignmentSystem:
             return False
 
     def get_dogs_to_reassign(self):
-        """Find dogs that need reassignment (callouts)"""
+        """Find dogs that need reassignment (callouts) - preserving full assignment strings"""
         dogs_to_reassign = []
         
         if not self.dog_assignments:
@@ -215,57 +221,67 @@ class DogReassignmentSystem:
             if (not assignment['combined'] or assignment['combined'].strip() == "") and \
                (assignment['callout'] and assignment['callout'].strip() != ""):
                 
-                # Parse the callout to get needed groups
-                needed_groups = self._parse_groups(assignment['callout'])
+                # Extract the FULL assignment string (everything after the colon)
+                callout_text = assignment['callout'].strip()
+                
+                if ':' not in callout_text:
+                    continue
+                
+                original_driver = callout_text.split(':', 1)[0].strip()
+                full_assignment_string = callout_text.split(':', 1)[1].strip()  # Keep this EXACTLY
+                
+                # Parse out just the numbers for capacity checking
+                needed_groups = self._extract_groups_for_capacity_check(full_assignment_string)
                 
                 if needed_groups:
                     dogs_to_reassign.append({
                         'dog_id': assignment['dog_id'],
                         'dog_name': assignment['dog_name'],
                         'num_dogs': assignment['num_dogs'],
-                        'needed_groups': needed_groups,
-                        'original_callout': assignment['callout']
+                        'needed_groups': needed_groups,  # For capacity checking
+                        'full_assignment_string': full_assignment_string,  # Preserve exactly
+                        'original_callout': assignment['callout'],
+                        'original_driver': original_driver
                     })
         
         print(f"🚨 Found {len(dogs_to_reassign)} callouts that need drivers assigned:")
         for dog in dogs_to_reassign:
-            print(f"   - {dog['dog_name']} ({dog['dog_id']}) - {dog['num_dogs']} dogs, groups {dog['needed_groups']}")
+            print(f"   - {dog['dog_name']} ({dog['dog_id']}) - {dog['num_dogs']} dogs")
+            print(f"     Original: {dog['original_callout']}")  
+            print(f"     Assignment string: '{dog['full_assignment_string']}'")
+            print(f"     Capacity needed in groups: {dog['needed_groups']}")
         
         return dogs_to_reassign
 
-    def _parse_groups(self, callout_text):
-        """Parse groups from callout text like 'Nate:1&2' -> [1, 2]"""
+    def _extract_groups_for_capacity_check(self, assignment_string):
+        """Extract group numbers for capacity checking - each digit 1,2,3 is a separate group"""
         try:
-            if ':' not in callout_text:
-                return []
+            print(f"      🔍 Extracting groups from assignment string: '{assignment_string}'")
             
-            # Extract the part after the colon
-            groups_part = callout_text.split(':', 1)[1].strip()
+            # Extract all digits that are 1, 2, or 3 from the string
+            # Each digit represents a separate group:
+            # "23" → [2, 3] (groups 2 and 3)
+            # "123" → [1, 2, 3] (groups 1, 2, and 3)  
+            # "1&2" → [1, 2] (groups 1 and 2)
+            # "2DD2" → [2] (group 2, ignore duplicate and codes)
+            # "3LM" → [3] (group 3, ignore codes)
             
-            # Handle different formats
-            groups = []
+            # Find all occurrences of digits 1, 2, or 3
+            group_digits = re.findall(r'[123]', assignment_string)
             
-            # Remove common non-numeric characters and split
-            groups_clean = groups_part.replace('&', ',').replace(' and ', ',').replace(' ', '')
+            # Convert each digit to an integer and remove duplicates
+            groups = sorted(list(set(int(digit) for digit in group_digits)))
             
-            for part in groups_clean.split(','):
-                part = part.strip()
-                if part.isdigit():
-                    groups.append(int(part))
-                elif part:
-                    # Try to extract numbers from mixed text like "3DD3" or "123"
-                    import re
-                    numbers = re.findall(r'\d+', part)
-                    for num in numbers:
-                        if 1 <= int(num) <= 3:  # Only accept valid group numbers
-                            groups.append(int(num))
+            print(f"      ✅ Groups for capacity check: {groups}")
             
-            # Remove duplicates and sort
-            groups = sorted(list(set(groups)))
+            # Show the parsing logic for clarity
+            if len(group_digits) != len(groups):
+                print(f"      📝 Found digits: {group_digits} → Unique groups: {groups}")
+            
             return groups
             
         except Exception as e:
-            print(f"⚠️ Error parsing groups from '{callout_text}': {e}")
+            print(f"⚠️ Error extracting groups from '{assignment_string}': {e}")
             return []
 
     def get_distance(self, dog1_id: str, dog2_id: str) -> float:
@@ -304,7 +320,7 @@ class DogReassignmentSystem:
                 if assigned_driver == driver_name:
                     # Parse groups for this assignment
                     groups_part = combined.split(':', 1)[1].strip()
-                    assigned_groups = self._parse_groups(f"dummy:{groups_part}")
+                    assigned_groups = self._extract_groups_for_capacity_check(groups_part)
                     
                     # Add to load for each group
                     for group in assigned_groups:
@@ -314,526 +330,387 @@ class DogReassignmentSystem:
         
         return load
 
-    def get_driver_current_dogs(self, driver_name: str) -> List[str]:
-        """Get list of dog IDs currently assigned to a driver"""
-        dogs = []
+    def _run_greedy_assignment_with_order(self, ordered_dogs):
+        """Run assignment keeping the exact assignment strings, only changing driver names"""
+        print("   🎯 Finding drivers with capacity - preserving exact assignment strings...")
         
-        if not self.dog_assignments:
-            return dogs
-        
+        # Build list of all dogs currently going today (with drivers)
+        dogs_going_today = []
         for assignment in self.dog_assignments:
             combined = assignment.get('combined', '')
-            
-            # Skip empty assignments
-            if not combined or combined.strip() == "":
-                continue
-            
-            # Extract driver name from combined assignment (before colon)
-            if ':' in combined:
-                assigned_driver = combined.split(':', 1)[0].strip()
+            if combined and ':' in combined:
+                driver = combined.split(':', 1)[0].strip()
+                assignment_string = combined.split(':', 1)[1].strip()
+                groups = self._extract_groups_for_capacity_check(assignment_string)
                 
-                if assigned_driver == driver_name:
-                    dogs.append(assignment['dog_id'])
+                dogs_going_today.append({
+                    'dog_id': assignment['dog_id'],
+                    'dog_name': assignment['dog_name'],
+                    'driver': driver,
+                    'groups': groups,
+                    'num_dogs': assignment['num_dogs']
+                })
         
-        return dogs
-
-    def get_driver_current_groups(self, driver_name: str) -> List[int]:
-        """Get list of groups currently handled by a driver"""
-        groups = set()
+        assignments = []
+        current_driver_loads = {}
         
-        if not self.dog_assignments:
-            return []
+        # Initialize driver loads
+        for driver in self.driver_capacities.keys():
+            current_driver_loads[driver] = self.calculate_driver_load(driver)
         
-        for assignment in self.dog_assignments:
-            combined = assignment.get('combined', '')
+        # Process each callout dog in the specified order
+        for callout_dog in ordered_dogs:
+            print(f"\n   🐕 Processing {callout_dog['dog_name']}")
+            print(f"       Original: {callout_dog['original_callout']}")
+            print(f"       Assignment string to preserve: '{callout_dog['full_assignment_string']}'")
+            print(f"       Needs capacity in groups: {callout_dog['needed_groups']}")
+            print(f"       Physical dogs: {callout_dog['num_dogs']}")
             
-            # Skip empty assignments
-            if not combined or combined.strip() == "":
-                continue
+            # Find ALL distances to dogs going today
+            distances_to_going_dogs = []
             
-            # Extract driver name and groups from combined assignment
-            if ':' in combined:
-                assigned_driver = combined.split(':', 1)[0].strip()
+            for going_dog in dogs_going_today:
+                distance = self.get_distance(callout_dog['dog_id'], going_dog['dog_id'])
                 
-                if assigned_driver == driver_name:
-                    # Parse groups for this assignment
-                    groups_part = combined.split(':', 1)[1].strip()
-                    assigned_groups = self._parse_groups(f"dummy:{groups_part}")
-                    groups.update(assigned_groups)
-        
-        return sorted(list(groups))
-
-    def calculate_effective_distance_to_driver(self, callout_dog_id: str, callout_needed_groups: List[int], 
-                                             driver_dogs: List[str], driver_groups: List[int]) -> Tuple[float, str]:
-        """Calculate effective distance considering group compatibility - STRICTER VERSION"""
-        if not driver_dogs:
-            return float('inf'), "no_dogs"
-        
-        # Find minimum physical distance to driver's route
-        min_physical_distance = float('inf')
-        closest_dog = None
-        all_distances = []  # DEBUG: Track all distances
-        
-        for driver_dog_id in driver_dogs:
-            distance = self.get_distance(callout_dog_id, driver_dog_id)
-            all_distances.append(f"{driver_dog_id}:{distance:.1f}mi")
-            if distance < min_physical_distance:
-                min_physical_distance = distance
-                closest_dog = driver_dog_id
-        
-        if min_physical_distance == float('inf'):
-            return float('inf'), "no_distance_data"
-        
-        # 🔍 DEBUG: Show ALL distances for this assignment consideration
-        print(f"      📏 Distances from {callout_dog_id}: {', '.join(all_distances)}")
-        print(f"      📏 Closest: {closest_dog} ({min_physical_distance:.1f}mi)")
-        
-        # Determine group compatibility with STRICTER distance limits
-        callout_groups_set = set(callout_needed_groups)
-        driver_groups_set = set(driver_groups)
-        
-        # Check for exact group matches
-        exact_matches = callout_groups_set.intersection(driver_groups_set)
-        
-        if exact_matches:
-            # Exact group match - use actual distance but with strict limit
-            if min_physical_distance <= self.EXACT_MATCH_MAX_DISTANCE:
-                print(f"      ✅ EXACT MATCH accepted: {min_physical_distance:.1f}mi ≤ {self.EXACT_MATCH_MAX_DISTANCE}mi")
-                return min_physical_distance, f"exact_match_{list(exact_matches)}"
-            else:
-                print(f"      ❌ EXACT MATCH rejected: {min_physical_distance:.1f}mi > {self.EXACT_MATCH_MAX_DISTANCE}mi")
-                return float('inf'), f"exact_match_too_far_{min_physical_distance:.1f}mi"
-        
-        # Check for adjacent group matches with even stricter limits
-        adjacent_matches = []
-        for callout_group in callout_needed_groups:
-            for driver_group in driver_groups:
-                if abs(callout_group - driver_group) <= 2 and callout_group != driver_group:
-                    adjacent_matches.append((callout_group, driver_group))
-        
-        if adjacent_matches:
-            # Adjacent group match - double the distance and apply strict limit
-            effective_distance = min_physical_distance * 2.0
-            if effective_distance <= self.ADJACENT_MATCH_MAX_DISTANCE:
-                print(f"      ✅ ADJACENT MATCH accepted: {effective_distance:.1f}mi ≤ {self.ADJACENT_MATCH_MAX_DISTANCE}mi")
-                return effective_distance, f"adjacent_match_{adjacent_matches[0]}"
-            else:
-                print(f"      ❌ ADJACENT MATCH rejected: {effective_distance:.1f}mi > {self.ADJACENT_MATCH_MAX_DISTANCE}mi")
-                return float('inf'), f"adjacent_match_too_far_{effective_distance:.1f}mi"
-        
-        # No group compatibility
-        return float('inf'), "no_group_compatibility"
-
-    def calculate_optimal_route_distance(self, driver_dogs: List[str]) -> Tuple[float, List[str]]:
-        """Calculate the optimal route distance for a driver's assigned dogs using TSP"""
-        if len(driver_dogs) <= 1:
-            return 0.0, driver_dogs
-        
-        if len(driver_dogs) == 2:
-            distance = self.get_distance(driver_dogs[0], driver_dogs[1])
-            return distance, driver_dogs
-        
-        # For larger routes, use a greedy nearest-neighbor TSP approximation
-        # Start from the first dog and always go to the nearest unvisited dog
-        unvisited = driver_dogs[1:]
-        current_dog = driver_dogs[0]
-        route = [current_dog]
-        total_distance = 0.0
-        
-        while unvisited:
-            nearest_dog = None
-            nearest_distance = float('inf')
+                # Filter out dogs more than 3 miles away
+                if distance <= 3.0:
+                    distances_to_going_dogs.append({
+                        'dog_id': going_dog['dog_id'],
+                        'dog_name': going_dog['dog_name'],
+                        'driver': going_dog['driver'],
+                        'groups': going_dog['groups'],
+                        'distance': distance
+                    })
             
-            for dog in unvisited:
-                distance = self.get_distance(current_dog, dog)
-                if distance < nearest_distance:
-                    nearest_distance = distance
-                    nearest_dog = dog
+            # Sort by distance (closest first)
+            distances_to_going_dogs.sort(key=lambda x: x['distance'])
             
-            if nearest_dog:
-                route.append(nearest_dog)
-                total_distance += nearest_distance
-                current_dog = nearest_dog
-                unvisited.remove(nearest_dog)
-            else:
-                # If we can't find distances, just add remaining dogs with penalty
-                route.extend(unvisited)
-                total_distance += len(unvisited) * 5.0  # 5 mile penalty per dog
+            print(f"       📏 Found {len(distances_to_going_dogs)} dogs within 3.0 miles")
+            
+            # Try to assign to drivers in order of distance (closest first)
+            assigned = False
+            
+            for close_dog in distances_to_going_dogs:
+                driver = close_dog['driver']
+                distance = close_dog['distance']
+                
+                print(f"\n       🚗 Checking driver {driver} (via {close_dog['dog_name']} at {distance:.1f}mi)")
+                
+                # Check if this driver has capacity in ALL needed groups
+                can_handle_all_groups = True
+                capacity_status = []
+                
+                for group in callout_dog['needed_groups']:
+                    group_key = f'group{group}'
+                    current_load = current_driver_loads.get(driver, {}).get(group_key, 0)
+                    capacity = self.driver_capacities.get(driver, {}).get(group_key, 0)
+                    needed = callout_dog['num_dogs']
+                    
+                    if current_load + needed <= capacity:
+                        capacity_status.append(f"Group {group}: {current_load + needed}/{capacity} ✅")
+                    else:
+                        capacity_status.append(f"Group {group}: {current_load + needed}/{capacity} ❌")
+                        can_handle_all_groups = False
+                
+                print(f"          📊 Capacity check: {', '.join(capacity_status)}")
+                
+                if not can_handle_all_groups:
+                    print(f"          ❌ Insufficient capacity")
+                    continue
+                
+                # All dogs in the list are already within 3 miles, so no additional distance check needed
+                
+                # SUCCESS! Create new assignment with same assignment string, new driver
+                new_assignment = f"{driver}:{callout_dog['full_assignment_string']}"
+                
+                print(f"          ✅ PERFECT MATCH!")
+                print(f"          📝 New assignment: {new_assignment}")
+                print(f"          📋 (Preserved exact string: '{callout_dog['full_assignment_string']}')")
+                
+                assignments.append({
+                    'dog_id': callout_dog['dog_id'],
+                    'dog_name': callout_dog['dog_name'],
+                    'new_assignment': new_assignment,
+                    'driver': driver,
+                    'distance': distance,
+                    'closest_dog': close_dog['dog_name'],
+                    'reason': f"capacity_available_via_{close_dog['dog_name']}"
+                })
+                
+                # UPDATE STATE: Add this dog's load to the driver
+                if driver not in current_driver_loads:
+                    current_driver_loads[driver] = {'group1': 0, 'group2': 0, 'group3': 0}
+                
+                for group in callout_dog['needed_groups']:
+                    group_key = f'group{group}'
+                    current_driver_loads[driver][group_key] += callout_dog['num_dogs']
+                
+                print(f"          📊 Updated {driver} load: {current_driver_loads[driver]}")
+                
+                # Add to dogs going today list for future iterations
+                dogs_going_today.append({
+                    'dog_id': callout_dog['dog_id'],
+                    'dog_name': callout_dog['dog_name'],
+                    'driver': driver,
+                    'groups': callout_dog['needed_groups'],
+                    'num_dogs': callout_dog['num_dogs']
+                })
+                
+                assigned = True
                 break
+            
+            if not assigned:
+                print(f"       ❌ NO VALID ASSIGNMENT for {callout_dog['dog_name']}")
+                print(f"          No drivers found with capacity in groups {callout_dog['needed_groups']} within 3.0 miles")
         
-        return total_distance, route
+        return assignments
 
-    def calculate_total_system_miles(self, assignments: List[Dict]) -> float:
-        """Calculate total system miles for a given assignment strategy"""
-        # Group assignments by driver
-        driver_assignments = {}
-        for assignment in assignments:
-            driver = assignment['driver']
-            if driver not in driver_assignments:
-                driver_assignments[driver] = []
-            driver_assignments[driver].append(assignment['dog_id'])
+    def _calculate_permutation_cost(self, assignments, ordered_dogs):
+        """Calculate total cost for a permutation (total miles + penalty for unassigned)"""
+        # Base cost: actual distances
+        total_distance_cost = sum(assignment['distance'] for assignment in assignments)
         
-        total_miles = 0.0
-        route_details = {}
+        # Penalty cost: unassigned dogs (5 miles each)
+        assigned_dog_ids = {assignment['dog_id'] for assignment in assignments}
+        unassigned_count = 0
         
-        print(f"      📊 ROUTE ANALYSIS:")
+        for dog in ordered_dogs:
+            if dog['dog_id'] not in assigned_dog_ids:
+                unassigned_count += 1
         
-        for driver, dog_ids in driver_assignments.items():
-            route_distance, optimal_route = self.calculate_optimal_route_distance(dog_ids)
-            total_miles += route_distance
-            route_details[driver] = {
-                'dogs': dog_ids,
-                'optimal_route': optimal_route,
-                'distance': route_distance
-            }
-            
-            print(f"         {driver}: {len(dog_ids)} dogs, optimal route = {route_distance:.1f}mi")
-            if len(optimal_route) <= 4:  # Show route for small groups
-                print(f"            Route: {' → '.join(optimal_route)}")
+        penalty_cost = unassigned_count * 5.0
         
-        print(f"      🎯 TOTAL SYSTEM MILES: {total_miles:.1f}")
-        return total_miles
+        total_cost = total_distance_cost + penalty_cost
+        
+        return total_cost
 
-    def strategy_individual_assignment(self, dogs_to_reassign: List[Dict], working_drivers: Dict) -> Tuple[List[Dict], float]:
-        """Strategy A: Individual assignment - DISTANCE PRIORITY VERSION"""
-        print(f"\n🔹 STRATEGY A: Distance-Priority Individual Assignment")
+    def _order_by_difficulty(self, dogs_to_reassign):
+        """Order dogs by placement difficulty - using preserved assignment strings"""
+        print("   🔍 Analyzing placement difficulty based on driver capacity...")
         
-        assignments = []
-        drivers_copy = {k: {
-            'capacity': v['capacity'].copy(),
-            'current_load': v['current_load'].copy(),
-            'current_dogs': v['current_dogs'].copy(),
-            'current_groups': v['current_groups'].copy()
-        } for k, v in working_drivers.items()}
-        
-        for dog in dogs_to_reassign:
-            print(f"\n🐕 Processing {dog['dog_name']} ({dog['dog_id']}) - Groups: {dog['needed_groups']}")
+        def calculate_difficulty_score(dog):
+            """Calculate difficulty score considering the preserved assignment requirements"""
+            dog_id = dog['dog_id']
+            needed_groups = dog['needed_groups']  # For capacity checking
+            num_dogs = dog['num_dogs']
+            assignment_string = dog['full_assignment_string']  # What they'll actually get
             
-            best_driver = None
-            best_distance = float('inf')
-            best_compatibility = ""
-            candidates = []
+            # Get current driver loads
+            current_driver_loads = {}
+            for driver in self.driver_capacities.keys():
+                current_driver_loads[driver] = self.calculate_driver_load(driver)
             
-            for driver_name, driver_info in drivers_copy.items():
-                print(f"\n   🚗 Checking driver: {driver_name}")
-                
-                # Check capacity first
-                can_handle = True
-                for group in dog['needed_groups']:
-                    group_key = f'group{group}'
-                    current = driver_info['current_load'].get(group_key, 0)
-                    capacity = driver_info['capacity'].get(group_key, 0)
+            # Count drivers with capacity in ALL needed groups
+            drivers_with_capacity = 0
+            viable_close_options = 0
+            
+            for assignment in self.dog_assignments:
+                if assignment.get('combined') and ':' in assignment['combined']:
+                    other_dog_id = assignment['dog_id']
+                    distance = self.get_distance(dog_id, other_dog_id)
                     
-                    if current + dog['num_dogs'] > capacity:
-                        print(f"      ❌ Capacity exceeded for group {group}: {current + dog['num_dogs']} > {capacity}")
-                        can_handle = False
-                        break
-                
-                if not can_handle:
-                    continue
-                
-                # Calculate distance with detailed logging
-                effective_distance, compatibility = self.calculate_effective_distance_to_driver(
-                    dog['dog_id'], dog['needed_groups'], 
-                    driver_info['current_dogs'], driver_info['current_groups']
-                )
-                
-                print(f"      📊 Result: {effective_distance:.1f}mi ({compatibility})")
-                
-                if effective_distance == float('inf'):
-                    continue
-                
-                candidates.append({
-                    'driver': driver_name,
-                    'distance': effective_distance,
-                    'compatibility': compatibility
-                })
-                
-                # DISTANCE FIRST: Pick the closest driver
-                if effective_distance < best_distance:
-                    best_driver = driver_name
-                    best_distance = effective_distance
-                    best_compatibility = compatibility
+                    if distance <= 3.0:  # Use the same 3 mile limit
+                        # Check if this driver has capacity in all needed groups
+                        combined = assignment['combined']
+                        driver = combined.split(':', 1)[0].strip()
+                        
+                        can_handle = True
+                        current_load = current_driver_loads.get(driver, {})
+                        driver_capacity = self.driver_capacities.get(driver, {})
+                        
+                        for group in needed_groups:
+                            group_key = f'group{group}'
+                            if current_load.get(group_key, 0) + num_dogs > driver_capacity.get(group_key, 0):
+                                can_handle = False
+                                break
+                        
+                        if can_handle:
+                            viable_close_options += 1
             
-            print(f"\n   📋 All candidates for {dog['dog_name']}:")
-            for candidate in sorted(candidates, key=lambda x: x['distance']):
-                print(f"      - {candidate['driver']}: {candidate['distance']:.1f}mi ({candidate['compatibility']})")
-            
-            if best_driver:
-                # Update driver state
-                for group in dog['needed_groups']:
-                    group_key = f'group{group}'
-                    drivers_copy[best_driver]['current_load'][group_key] += dog['num_dogs']
-                
-                drivers_copy[best_driver]['current_dogs'].append(dog['dog_id'])
-                
-                current_groups = set(drivers_copy[best_driver]['current_groups'])
-                current_groups.update(dog['needed_groups'])
-                drivers_copy[best_driver]['current_groups'] = sorted(list(current_groups))
-                
-                groups_text = "&".join(map(str, dog['needed_groups']))
-                assignments.append({
-                    'dog_id': dog['dog_id'],
-                    'dog_name': dog['dog_name'],
-                    'new_assignment': f"{best_driver}:{groups_text}",
-                    'driver': best_driver,
-                    'strategy': 'distance_priority'
-                })
-                
-                print(f"   ✅ ASSIGNED: {dog['dog_name']} → {best_driver} ({best_distance:.1f}mi, {best_compatibility})")
-            else:
-                print(f"   ❌ NO VALID ASSIGNMENT for {dog['dog_name']}")
-        
-        total_miles = self.calculate_total_system_miles(assignments)
-        print(f"      ✅ Distance-Priority Assignment: {len(assignments)} dogs assigned, {total_miles:.1f} total miles")
-        
-        return assignments, total_miles
-
-    def strategy_load_balanced_assignment(self, dogs_to_reassign: List[Dict], working_drivers: Dict) -> Tuple[List[Dict], float]:
-        """Strategy B: Load-balanced assignment (distribute evenly across drivers)"""
-        print(f"\n🔹 STRATEGY B: Load-Balanced Assignment")
-        
-        assignments = []
-        drivers_copy = {k: {
-            'capacity': v['capacity'].copy(),
-            'current_load': v['current_load'].copy(),
-            'current_dogs': v['current_dogs'].copy(),
-            'current_groups': v['current_groups'].copy()
-        } for k, v in working_drivers.items()}
-        
-        for dog in dogs_to_reassign:
-            best_driver = None
-            best_score = float('-inf')
-            
-            for driver_name, driver_info in drivers_copy.items():
-                # Check capacity
-                can_handle = True
-                for group in dog['needed_groups']:
-                    group_key = f'group{group}'
-                    current = driver_info['current_load'].get(group_key, 0)
-                    capacity = driver_info['capacity'].get(group_key, 0)
-                    
-                    if current + dog['num_dogs'] > capacity:
-                        can_handle = False
-                        break
-                
-                if not can_handle:
-                    continue
-                
-                # Calculate distance
-                effective_distance, compatibility = self.calculate_effective_distance_to_driver(
-                    dog['dog_id'], dog['needed_groups'], 
-                    driver_info['current_dogs'], driver_info['current_groups']
-                )
-                
-                if effective_distance > self.MAX_DISTANCE:
-                    continue
-                
-                # Score with heavy load balancing
-                total_load = sum(driver_info['current_load'].values())
-                max_total_capacity = sum(driver_info['capacity'].values())
-                load_ratio = total_load / max_total_capacity if max_total_capacity > 0 else 0
-                
-                score = 100.0 - (effective_distance * 10) - (load_ratio * 40)  # Heavy load penalty
-                
-                if "exact_match" in compatibility:
-                    score += 15
-                elif "adjacent_match" in compatibility:
-                    score += 5
-                
-                if score > best_score:
-                    best_driver = driver_name
-                    best_score = score
-            
-            if best_driver:
-                # Update driver state
-                for group in dog['needed_groups']:
-                    group_key = f'group{group}'
-                    drivers_copy[best_driver]['current_load'][group_key] += dog['num_dogs']
-                
-                drivers_copy[best_driver]['current_dogs'].append(dog['dog_id'])
-                
-                current_groups = set(drivers_copy[best_driver]['current_groups'])
-                current_groups.update(dog['needed_groups'])
-                drivers_copy[best_driver]['current_groups'] = sorted(list(current_groups))
-                
-                groups_text = "&".join(map(str, dog['needed_groups']))
-                assignments.append({
-                    'dog_id': dog['dog_id'],
-                    'dog_name': dog['dog_name'],
-                    'new_assignment': f"{best_driver}:{groups_text}",
-                    'driver': best_driver,
-                    'strategy': 'load_balanced'
-                })
-        
-        total_miles = self.calculate_total_system_miles(assignments)
-        print(f"      ✅ Load-Balanced Assignment: {len(assignments)} dogs assigned, {total_miles:.1f} total miles")
-        
-        return assignments, total_miles
-
-    def strategy_proximity_clustering(self, dogs_to_reassign: List[Dict], working_drivers: Dict) -> Tuple[List[Dict], float]:
-        """Strategy C: Proximity clustering (assign nearby dogs to same driver when possible)"""
-        print(f"\n🔹 STRATEGY C: Proximity Clustering")
-        
-        assignments = []
-        drivers_copy = {k: {
-            'capacity': v['capacity'].copy(),
-            'current_load': v['current_load'].copy(),
-            'current_dogs': v['current_dogs'].copy(),
-            'current_groups': v['current_groups'].copy()
-        } for k, v in working_drivers.items()}
-        
-        # Group dogs by proximity (within 1 mile of each other)
-        clusters = []
-        remaining_dogs = dogs_to_reassign.copy()
-        
-        while remaining_dogs:
-            cluster = [remaining_dogs.pop(0)]
-            dogs_to_add = []
-            
-            for dog in remaining_dogs:
-                for cluster_dog in cluster:
-                    distance = self.get_distance(dog['dog_id'], cluster_dog['dog_id'])
-                    if distance <= 1.0:  # Close enough to cluster
-                        dogs_to_add.append(dog)
-                        break
-            
-            for dog in dogs_to_add:
-                cluster.append(dog)
-                remaining_dogs.remove(dog)
-            
-            clusters.append(cluster)
-        
-        print(f"      📦 Created {len(clusters)} proximity clusters")
-        
-        # Assign each cluster to the best driver who can handle all dogs in cluster
-        for cluster in clusters:
-            best_driver = None
-            best_total_score = float('-inf')
-            
-            for driver_name, driver_info in drivers_copy.items():
-                # Check if driver can handle entire cluster
+            # Calculate total drivers with capacity (regardless of distance)
+            for driver, capacity in self.driver_capacities.items():
                 can_handle_all = True
-                total_dogs_needed = {}
+                current_load = current_driver_loads.get(driver, {})
                 
-                for dog in cluster:
-                    for group in dog['needed_groups']:
-                        group_key = f'group{group}'
-                        total_dogs_needed[group_key] = total_dogs_needed.get(group_key, 0) + dog['num_dogs']
-                
-                for group_key, needed in total_dogs_needed.items():
-                    current = driver_info['current_load'].get(group_key, 0)
-                    capacity = driver_info['capacity'].get(group_key, 0)
-                    if current + needed > capacity:
+                for group in needed_groups:
+                    group_key = f'group{group}'
+                    if current_load.get(group_key, 0) + num_dogs > capacity.get(group_key, 0):
                         can_handle_all = False
                         break
                 
-                if not can_handle_all:
-                    continue
-                
-                # Calculate total score for cluster
-                total_score = 0
-                for dog in cluster:
-                    effective_distance, compatibility = self.calculate_effective_distance_to_driver(
-                        dog['dog_id'], dog['needed_groups'], 
-                        driver_info['current_dogs'], driver_info['current_groups']
-                    )
-                    
-                    if effective_distance > self.MAX_DISTANCE:
-                        total_score = float('-inf')
-                        break
-                    
-                    score = 100.0 - (effective_distance * 15)
-                    if "exact_match" in compatibility:
-                        score += 15
-                    elif "adjacent_match" in compatibility:
-                        score += 5
-                    
-                    total_score += score
-                
-                if total_score > best_total_score:
-                    best_driver = driver_name
-                    best_total_score = total_score
+                if can_handle_all:
+                    drivers_with_capacity += 1
             
-            # Assign cluster to best driver
-            if best_driver:
-                for dog in cluster:
-                    # Update driver state
-                    for group in dog['needed_groups']:
+            # Calculate difficulty
+            if viable_close_options == 0:
+                difficulty = 100  # No close viable options
+            elif viable_close_options <= 2:
+                difficulty = 60   # Very few options
+            elif viable_close_options <= 5:
+                difficulty = 30   # Some options
+            else:
+                difficulty = 10   # Many options
+            
+            # Add penalties
+            if num_dogs > 1:
+                difficulty += (num_dogs - 1) * 10  # Multiple dogs penalty
+            
+            if len(needed_groups) > 1:
+                difficulty += len(needed_groups) * 5  # Multi-group penalty
+            
+            return {
+                'dog': dog,
+                'total_difficulty': difficulty,
+                'viable_close_options': viable_close_options,
+                'drivers_with_capacity': drivers_with_capacity
+            }
+        
+        # Calculate difficulty for all dogs
+        difficulty_analysis = []
+        
+        for dog in dogs_to_reassign:
+            analysis = calculate_difficulty_score(dog)
+            difficulty_analysis.append(analysis)
+        
+        # Sort by difficulty (hardest first)
+        difficulty_analysis.sort(key=lambda x: x['total_difficulty'], reverse=True)
+        
+        # Show difficulty analysis
+        print("   📋 Difficulty ranking (hardest to assign first):")
+        for i, analysis in enumerate(difficulty_analysis[:5]):  # Show top 5
+            dog = analysis['dog']
+            print(f"      {i+1}. {dog['dog_name']} - Difficulty: {analysis['total_difficulty']}")
+            print(f"         Assignment: '{dog['full_assignment_string']}'")
+            print(f"         Capacity needed: Groups {dog['needed_groups']}")
+            print(f"         🎯 {analysis['viable_close_options']} close viable options")
+            print(f"         🏢 {analysis['drivers_with_capacity']} total drivers with capacity")
+        
+        # Return the ordered list of dogs
+        return [analysis['dog'] for analysis in difficulty_analysis]
+
+    def _order_by_centrality(self, dogs_to_reassign):
+        """Order dogs by distance to centroid of all going dogs (central first)"""
+        # Calculate centroid position (average of all going dogs)
+        going_dog_positions = []
+        for assignment in self.dog_assignments:
+            if assignment.get('combined') and ':' in assignment['combined']:
+                going_dog_positions.append(assignment['dog_id'])
+        
+        def centrality_score(dog):
+            # Average distance to all going dogs
+            total_distance = 0
+            valid_distances = 0
+            for going_dog_id in going_dog_positions[:20]:  # Sample to avoid slowdown
+                distance = self.get_distance(dog['dog_id'], going_dog_id)
+                if distance < self.EXCLUSION_DISTANCE:
+                    total_distance += distance
+                    valid_distances += 1
+            
+            return total_distance / max(valid_distances, 1)
+        
+        return sorted(dogs_to_reassign, key=centrality_score)
+
+    def _order_by_constraint_count(self, dogs_to_reassign):
+        """Order dogs by number of valid assignment options (fewest options first)"""
+        print("   🔍 Counting valid assignment options for each dog...")
+        
+        def count_valid_options(dog):
+            """Count how many drivers can actually take this dog"""
+            dog_id = dog['dog_id']
+            needed_groups = dog['needed_groups']
+            num_dogs = dog['num_dogs']
+            
+            valid_options = 0
+            current_driver_loads = {}
+            
+            # Calculate current loads for all drivers
+            for driver in self.driver_capacities.keys():
+                current_driver_loads[driver] = self.calculate_driver_load(driver)
+            
+            # Check each going dog to see if their driver can take our callout dog
+            for assignment in self.dog_assignments:
+                if assignment.get('combined') and ':' in assignment['combined']:
+                    other_dog_id = assignment['dog_id']
+                    distance = self.get_distance(dog_id, other_dog_id)
+                    
+                    # Must be within 3 miles
+                    if distance > 3.0:
+                        continue
+                    
+                    # Get the driver
+                    combined = assignment['combined']
+                    driver = combined.split(':', 1)[0].strip()
+                    
+                    # Check capacity constraints
+                    current_load = current_driver_loads.get(driver, {})
+                    driver_capacity = self.driver_capacities.get(driver, {})
+                    
+                    can_handle = True
+                    for group in needed_groups:
                         group_key = f'group{group}'
-                        drivers_copy[best_driver]['current_load'][group_key] += dog['num_dogs']
+                        if current_load.get(group_key, 0) + num_dogs > driver_capacity.get(group_key, 0):
+                            can_handle = False
+                            break
                     
-                    drivers_copy[best_driver]['current_dogs'].append(dog['dog_id'])
-                    
-                    current_groups = set(drivers_copy[best_driver]['current_groups'])
-                    current_groups.update(dog['needed_groups'])
-                    drivers_copy[best_driver]['current_groups'] = sorted(list(current_groups))
-                    
-                    groups_text = "&".join(map(str, dog['needed_groups']))
-                    assignments.append({
-                        'dog_id': dog['dog_id'],
-                        'dog_name': dog['dog_name'],
-                        'new_assignment': f"{best_driver}:{groups_text}",
-                        'driver': best_driver,
-                        'strategy': 'proximity_cluster'
-                    })
+                    if can_handle:
+                        valid_options += 1
+            
+            return valid_options
         
-        total_miles = self.calculate_total_system_miles(assignments)
-        print(f"      ✅ Proximity Clustering: {len(assignments)} dogs assigned, {total_miles:.1f} total miles")
+        # Calculate valid options for each dog
+        constraint_analysis = []
         
-        return assignments, total_miles
+        for dog in dogs_to_reassign:
+            options = count_valid_options(dog)
+            constraint_analysis.append({
+                'dog': dog,
+                'valid_options': options
+            })
+        
+        # Sort by fewest options first (most constrained first)
+        constraint_analysis.sort(key=lambda x: x['valid_options'])
+        
+        # Show constraint analysis
+        print("   📋 Constraint ranking (most constrained first):")
+        for i, analysis in enumerate(constraint_analysis[:5]):  # Show top 5
+            dog = analysis['dog']
+            options = analysis['valid_options']
+            print(f"      {i+1}. {dog['dog_name']} (Groups: {dog['needed_groups']}) - {options} valid options")
+            
+            if options == 0:
+                print(f"         ❌ No valid drivers found!")
+            elif options <= 2:
+                print(f"         ⚠️ Very constrained")
+            elif options <= 5:
+                print(f"         ⚡ Moderately constrained")
+        
+        return [analysis['dog'] for analysis in constraint_analysis]
 
-    def prioritize_callout_dogs(self, dogs_to_reassign: List[Dict]) -> List[Dict]:
-        """Sort callout dogs by placement difficulty (hardest first)"""
+    def _order_by_group_priority(self, dogs_to_reassign):
+        """Order dogs by group priority (Group 1 first, then multi-group, then others)"""
+        def group_priority(dog):
+            groups = dog['needed_groups']
+            if 1 in groups and len(groups) == 1:
+                return 1  # Group 1 only (highest priority)
+            elif len(groups) > 1:
+                return 2  # Multi-group (second priority)
+            elif 2 in groups:
+                return 3  # Group 2 only
+            else:
+                return 4  # Group 3 only
         
-        def get_priority_score(dog):
-            """Calculate priority score (higher = process first)"""
-            score = 0
-            
-            # Priority 1: Number of physical dogs (higher = more priority)
-            # Dogs with 2+ dogs should be placed first
-            score += dog['num_dogs'] * 100
-            
-            # Priority 2: Number of groups needed (higher = more priority)  
-            # Multi-group dogs (1&2, 2&3, 123) are harder to place
-            num_groups = len(dog['needed_groups'])
-            score += num_groups * 10
-            
-            # Priority 3: Group complexity bonus
-            # Dogs needing multiple specific groups get extra priority
-            if num_groups >= 2:
-                score += 20  # Extra bonus for multi-group requirements
-            
-            return score
-        
-        # Sort by priority score (highest first)
-        prioritized_dogs = sorted(dogs_to_reassign, key=get_priority_score, reverse=True)
-        
-        print(f"\n📋 CALLOUT DOG PRIORITIZATION:")
-        print(f"   Processing order (hardest to place first):")
-        
-        for i, dog in enumerate(prioritized_dogs):
-            priority_score = get_priority_score(dog)
-            groups_text = "&".join(map(str, dog['needed_groups']))
-            complexity = ""
-            
-            if dog['num_dogs'] > 1:
-                complexity += f"{dog['num_dogs']} dogs, "
-            if len(dog['needed_groups']) > 1:
-                complexity += f"multi-group ({groups_text}), "
-            if not complexity:
-                complexity = f"single dog, group {groups_text}, "
-            
-            complexity = complexity.rstrip(", ")
-            
-            print(f"   {i+1}. {dog['dog_name']} - {complexity} (priority: {priority_score})")
-        
-        return prioritized_dogs
+        return sorted(dogs_to_reassign, key=group_priority)
 
-    def reassign_dogs_individually(self):
-        """Compare multiple assignment strategies and pick the one with lowest total system miles"""
-        print("\n🔄 Starting MULTI-STRATEGY ROUTE-OPTIMIZED ASSIGNMENT...")
-        print("🎯 Comparing multiple strategies and selecting optimal total system miles")
+    def _order_randomly(self, dogs_to_reassign):
+        """Random ordering for baseline comparison"""
+        random_order = dogs_to_reassign.copy()
+        random.shuffle(random_order)
+        return random_order
+
+    def reassign_dogs_optimal_permutation(self):
+        """Try all permutations for small numbers of dogs (≤6)"""
+        print("\n🔄 Starting OPTIMAL PERMUTATION ASSIGNMENT...")
+        print("🎯 Trying all possible orderings to find globally optimal solution")
         
         dogs_to_reassign = self.get_dogs_to_reassign()
         
@@ -841,145 +718,193 @@ class DogReassignmentSystem:
             print("✅ No callouts detected - all dogs have drivers assigned!")
             return []
         
-        # 📋 PRIORITIZE DOGS: Process hardest-to-place dogs first
-        dogs_to_reassign = self.prioritize_callout_dogs(dogs_to_reassign)
+        num_dogs = len(dogs_to_reassign)
+        num_permutations = 1
+        for i in range(1, num_dogs + 1):
+            num_permutations *= i
         
-        # Validate data
-        print(f"\n🔍 Data validation:")
-        print(f" Matrix dogs: {len(self.distance_matrix) if self.distance_matrix is not None else 0}")
-        print(f" Assignment dogs: {len(self.dog_assignments)}")
-        print(f" Callout dogs: {len(dogs_to_reassign)}")
+        print(f"📊 Found {num_dogs} callout dogs")
+        print(f"🔢 Total permutations to try: {num_permutations}")
         
-        if len(self.distance_matrix) == 0:
-            print("❌ NO DISTANCE MATRIX DATA!")
-            return []
+        # Safety check: Don't try more than 720 permutations (6! = reasonable limit)
+        MAX_PERMUTATIONS = 720
+        if num_permutations > MAX_PERMUTATIONS:
+            print(f"⚠️ Too many permutations ({num_permutations} > {MAX_PERMUTATIONS})")
+            print(f"🔄 Falling back to smart optimization...")
+            return self.reassign_dogs_smart_optimization()
         
-        # Get callout driver to exclude
-        callout_driver = None
-        if dogs_to_reassign[0].get('original_callout'):
-            callout_text = dogs_to_reassign[0]['original_callout']
-            if ':' in callout_text:
-                callout_driver = callout_text.split(':', 1)[0].strip()
+        print(f"⏱️ Estimated processing time: {num_permutations * 2}s (2s per permutation)")
         
-        print(f"🚫 Excluding callout driver: {callout_driver}")
+        best_assignments = []
+        best_total_cost = float('inf')
+        best_order = None
+        best_details = {}
         
-        # Initialize working drivers with current state
-        working_drivers = {}
-        for assignment in self.dog_assignments:
-            combined = assignment.get('combined', '')
-            if combined and ':' in combined:
-                driver_name = combined.split(':', 1)[0].strip()
-                if driver_name and driver_name in self.driver_capacities and driver_name != callout_driver:
-                    if driver_name not in working_drivers:
-                        working_drivers[driver_name] = {
-                            'capacity': self.driver_capacities[driver_name].copy(),
-                            'current_load': self.calculate_driver_load(driver_name).copy(),
-                            'current_dogs': self.get_driver_current_dogs(driver_name).copy(),
-                            'current_groups': self.get_driver_current_groups(driver_name).copy()
-                        }
+        all_permutations = list(itertools.permutations(dogs_to_reassign))
         
-        print(f"👥 Available working drivers: {len(working_drivers)}")
+        print(f"\n🧪 TESTING ALL {num_permutations} PERMUTATIONS:")
         
-        # 🏁 STRATEGY COMPARISON: Try multiple approaches
-        print(f"\n🏁 COMPARING ASSIGNMENT STRATEGIES:")
+        start_time = time.time()
         
-        strategies = []
+        for perm_idx, dog_order in enumerate(all_permutations):
+            print(f"\n📋 Permutation {perm_idx + 1}/{num_permutations}:")
+            order_names = [dog['dog_name'] for dog in dog_order]
+            print(f"   Order: {' → '.join(order_names)}")
+            
+            # Run greedy assignment with this specific order
+            assignments = self._run_greedy_assignment_with_order(list(dog_order))
+            
+            # Calculate total cost for this permutation
+            total_cost = self._calculate_permutation_cost(assignments, list(dog_order))
+            
+            print(f"   📊 Result: {len(assignments)} assigned, total cost: {total_cost:.1f} miles")
+            
+            # Track if this is the best so far
+            if total_cost < best_total_cost:
+                best_total_cost = total_cost
+                best_assignments = assignments
+                best_order = order_names.copy()
+                best_details = {
+                    'permutation': perm_idx + 1,
+                    'assigned_count': len(assignments),
+                    'unassigned_count': len(dog_order) - len(assignments),
+                    'total_miles': total_cost
+                }
+                print(f"   🏆 NEW BEST! Cost: {total_cost:.1f}")
+            
+            # Progress update every 20 permutations
+            if (perm_idx + 1) % 20 == 0:
+                elapsed = time.time() - start_time
+                remaining = (num_permutations - perm_idx - 1) * (elapsed / (perm_idx + 1))
+                print(f"   ⏱️ Progress: {perm_idx + 1}/{num_permutations}, ~{remaining:.0f}s remaining")
         
-        # Strategy A: Individual assignment (distance-first)
-        try:
-            assignments_a, miles_a = self.strategy_individual_assignment(dogs_to_reassign, working_drivers)
-            strategies.append(('Distance-Priority Assignment', assignments_a, miles_a))
-        except Exception as e:
-            print(f"      ❌ Strategy A failed: {e}")
+        elapsed_time = time.time() - start_time
         
-        # Strategy B: Load-balanced assignment
-        try:
-            assignments_b, miles_b = self.strategy_load_balanced_assignment(dogs_to_reassign, working_drivers)
-            strategies.append(('Load-Balanced Assignment', assignments_b, miles_b))
-        except Exception as e:
-            print(f"      ❌ Strategy B failed: {e}")
+        # Show results
+        print(f"\n🏆 OPTIMAL PERMUTATION RESULTS:")
+        print(f"   ⏱️ Total processing time: {elapsed_time:.1f} seconds")
+        print(f"   🎯 Best permutation: #{best_details['permutation']}")
+        print(f"   📋 Best order: {' → '.join(best_order)}")
+        print(f"   📊 Dogs assigned: {best_details['assigned_count']}/{num_dogs}")
+        print(f"   📏 Total cost: {best_details['total_miles']:.1f} miles")
         
-        # Strategy C: Proximity clustering
-        try:
-            assignments_c, miles_c = self.strategy_proximity_clustering(dogs_to_reassign, working_drivers)
-            strategies.append(('Proximity Clustering', assignments_c, miles_c))
-        except Exception as e:
-            print(f"      ❌ Strategy C failed: {e}")
+        if best_details['unassigned_count'] > 0:
+            print(f"   ⚠️ Unassigned dogs: {best_details['unassigned_count']} (counted as 5 miles each)")
         
-        if not strategies:
-            print("❌ All strategies failed!")
-            return []
-        
-        # Pick the best strategy
-        best_strategy_name, best_assignments, best_miles = min(strategies, key=lambda x: x[2])
-        
-        print(f"\n🏆 STRATEGY COMPARISON RESULTS:")
-        for name, assignments, miles in strategies:
-            status = "🥇 WINNER!" if name == best_strategy_name else ""
-            print(f"   {name}: {len(assignments)} dogs, {miles:.1f} total miles {status}")
-        
-        print(f"\n🎯 SELECTED STRATEGY: {best_strategy_name}")
-        print(f"   📊 Dogs assigned: {len(best_assignments)}")
-        print(f"   📏 Total system miles: {best_miles:.1f}")
-        print(f"   📈 Average miles per dog: {best_miles/len(best_assignments):.1f}" if best_assignments else "   📈 No assignments")
-        
-        # Show detailed results
+        # Show the best assignments
         if best_assignments:
-            print(f"\n🎉 ROUTE-OPTIMIZED RESULTS ({best_strategy_name}):")
-            driver_counts = {}
-            driver_distances = {}
-            
-            # Group by driver for route analysis
-            driver_dogs = {}
+            print(f"\n🎉 OPTIMAL ASSIGNMENTS:")
             for assignment in best_assignments:
-                driver = assignment['driver']
-                if driver not in driver_dogs:
-                    driver_dogs[driver] = []
-                driver_dogs[driver].append(assignment['dog_id'])
-                
-                # Count assignments
-                driver_counts[driver] = driver_counts.get(driver, 0) + 1
+                print(f"      ✅ {assignment['dog_name']} → {assignment['new_assignment']}")
+                print(f"         Distance: {assignment['distance']:.1f}mi via {assignment['closest_dog']}")
+        
+        return best_assignments
+
+    def reassign_dogs_smart_optimization(self):
+        """Smart heuristic + local optimization for large numbers of callout dogs"""
+        print("\n🔄 Starting SMART OPTIMIZATION ASSIGNMENT...")
+        print("🎯 Using intelligent heuristics for scalability (3 mile limit)")
+        
+        dogs_to_reassign = self.get_dogs_to_reassign()
+        
+        if not dogs_to_reassign:
+            print("✅ No callouts detected - all dogs have drivers assigned!")
+            return []
+        
+        num_dogs = len(dogs_to_reassign)
+        print(f"📊 Found {num_dogs} callout dogs")
+        
+        # Show what each callout dog needs
+        print(f"\n📋 CALLOUT REQUIREMENTS:")
+        for dog in dogs_to_reassign:
+            original_assignment = dog['original_callout']
+            needed_groups = dog['needed_groups']
+            print(f"   🐕 {dog['dog_name']} ({dog['dog_id']}): was {original_assignment} → needs driver with capacity in groups {needed_groups}")
+        
+        # Show current driver capacity status
+        print(f"\n📊 CURRENT DRIVER CAPACITY:")
+        for driver, capacity in self.driver_capacities.items():
+            current_load = self.calculate_driver_load(driver)
+            available = {}
+            for group in [1, 2, 3]:
+                group_key = f'group{group}'
+                available[group_key] = capacity.get(group_key, 0) - current_load.get(group_key, 0)
             
-            # Calculate and show optimal routes
-            total_calculated_miles = 0.0
-            for driver, dog_ids in driver_dogs.items():
-                route_distance, optimal_route = self.calculate_optimal_route_distance(dog_ids)
-                driver_distances[driver] = route_distance
-                total_calculated_miles += route_distance
-                
-                # Get dog names for display
-                dog_names = []
-                for assignment in best_assignments:
-                    if assignment['driver'] == driver:
-                        dog_names.append(assignment['dog_name'])
-                
-                print(f"   {driver}: {len(dog_ids)} dogs → {route_distance:.1f}mi route")
-                if len(optimal_route) <= 5:  # Show route for manageable sizes
-                    route_names = []
-                    for dog_id in optimal_route:
-                        for assignment in best_assignments:
-                            if assignment['dog_id'] == dog_id:
-                                route_names.append(assignment['dog_name'])
-                                break
-                    print(f"      Route: {' → '.join(route_names)}")
-                
-                # Show assignments for this driver
-                assignment_list = []
-                for name in dog_names:
-                    for assignment in best_assignments:
-                        if assignment['dog_name'] == name:
-                            assignment_list.append(f"{name} → {assignment['new_assignment']}")
-                            break
-                print(f"      Assignments: {', '.join(assignment_list)}")
+            print(f"   🚗 {driver}: Available capacity G1:{available['group1']}, G2:{available['group2']}, G3:{available['group3']}")
+        
+        if num_dogs <= 6:
+            print(f"🔢 Small number of dogs - using exhaustive permutation optimization")
+            return self.reassign_dogs_optimal_permutation()
+        
+        print(f"🧠 Large number of dogs - using smart heuristic approach")
+        
+        start_time = time.time()
+        
+        # Step 1: Try multiple intelligent ordering strategies
+        strategies = [
+            ("Hardest First", self._order_by_difficulty),
+            ("Closest to Center", self._order_by_centrality), 
+            ("Fewest Options", self._order_by_constraint_count),
+            ("Group Priority", self._order_by_group_priority),
+            ("Random Baseline", self._order_randomly)
+        ]
+        
+        best_assignments = []
+        best_cost = float('inf')
+        best_strategy = ""
+        strategy_results = []
+        
+        print(f"\n🧪 TESTING {len(strategies)} ORDERING STRATEGIES:")
+        
+        for strategy_name, ordering_func in strategies:
+            print(f"\n📋 Strategy: {strategy_name}")
             
-            print(f"\n📊 Route optimization summary:")
-            print(f"   🎯 Total optimized miles: {total_calculated_miles:.1f}")
-            print(f"   📈 Miles per driver: {total_calculated_miles/len(driver_dogs):.1f}" if driver_dogs else "   📈 No drivers")
+            # Get initial ordering from strategy
+            ordered_dogs = ordering_func(dogs_to_reassign)
+            order_names = [dog['dog_name'] for dog in ordered_dogs]
+            print(f"   Order: {' → '.join(order_names[:5])}{'...' if len(order_names) > 5 else ''}")
             
-            total_assignments = len(best_assignments)
-            unassigned = len(dogs_to_reassign) - total_assignments
-            if unassigned > 0:
-                print(f"   ⚠️  {unassigned} dogs could not be assigned")
+            # Run assignment with this ordering
+            assignments = self._run_greedy_assignment_with_order(ordered_dogs)
+            cost = self._calculate_permutation_cost(assignments, ordered_dogs)
+            
+            strategy_results.append({
+                'name': strategy_name,
+                'cost': cost,
+                'assignments': assignments,
+                'assigned_count': len(assignments)
+            })
+            
+            print(f"   📊 Result: {len(assignments)}/{num_dogs} assigned, cost: {cost:.1f} miles")
+            
+            if cost < best_cost:
+                best_cost = cost
+                best_assignments = assignments
+                best_strategy = strategy_name
+                print(f"   🏆 NEW BEST!")
+        
+        elapsed_time = time.time() - start_time
+        
+        # Show results
+        print(f"\n🏆 SMART OPTIMIZATION RESULTS:")
+        print(f"   ⏱️ Total processing time: {elapsed_time:.1f} seconds")
+        print(f"   🎯 Best strategy: {best_strategy}")
+        print(f"   📊 Dogs assigned: {len(best_assignments)}/{num_dogs}")
+        print(f"   📏 Total cost: {best_cost:.1f} miles")
+        
+        # Show strategy comparison
+        print(f"\n📊 STRATEGY COMPARISON:")
+        strategy_results.sort(key=lambda x: x['cost'])
+        for i, result in enumerate(strategy_results):
+            status = "🥇" if i == 0 else "🥈" if i == 1 else "🥉" if i == 2 else "  "
+            print(f"   {status} {result['name']}: {result['assigned_count']}/{num_dogs} assigned, {result['cost']:.1f} miles")
+        
+        # Show the best assignments
+        if best_assignments:
+            print(f"\n🎉 OPTIMAL ASSIGNMENTS ({best_strategy}):")
+            for assignment in best_assignments:
+                print(f"      ✅ {assignment['dog_name']} → {assignment['new_assignment']}")
+                print(f"         Distance: {assignment['distance']:.1f}mi via {assignment['closest_dog']}")
         
         return best_assignments
 
@@ -993,7 +918,6 @@ class DogReassignmentSystem:
                 return False
             
             # Extract sheet ID from your existing MAP_SHEET_URL
-            # "https://docs.google.com/spreadsheets/d/1mg8d5CLxSR54KhNUL8SpL5jzrGN-bghTsC9vxSK8lR0/export?format=csv&gid=267803750"
             sheet_id = "1mg8d5CLxSR54KhNUL8SpL5jzrGN-bghTsC9vxSK8lR0"
             
             # Open the spreadsheet
@@ -1031,7 +955,7 @@ class DogReassignmentSystem:
                 return False
             
             header_row = all_data[0]
-            print(f"📋 Sheet has {len(all_data)} rows and columns: {header_row[:10]}...")  # Show first 10 columns
+            print(f"📋 Sheet has {len(all_data)} rows and columns: {header_row[:10]}...")
             
             # Find the Dog ID column
             dog_id_col = None
@@ -1101,7 +1025,7 @@ class DogReassignmentSystem:
             if slack_webhook:
                 try:
                     slack_message = {
-                        "text": f"🐕 Dog Reassignment Complete: Updated {updates_count} assignments in Google Sheets"
+                        "text": f"🐕 Dog Reassignment Complete: Updated {updates_count} assignments using 3-mile limit optimization"
                     }
                     response = requests.post(slack_webhook, json=slack_message, timeout=10)
                     if response.status_code == 200:
@@ -1121,8 +1045,8 @@ class DogReassignmentSystem:
 
 def main():
     """Main function to run the dog reassignment system"""
-    print("🚀 Production Dog Reassignment System")
-    print("=" * 50)
+    print("🚀 Production Dog Reassignment System - SMART OPTIMIZATION (3 MILE LIMIT)")
+    print("=" * 75)
     
     # Initialize system
     system = DogReassignmentSystem()
@@ -1132,7 +1056,7 @@ def main():
         print("❌ Failed to setup Google Sheets client for writing")
         return
     
-    # Load all data (your existing code)
+    # Load all data
     print("\n⬇️ Loading data from Google Sheets...")
     
     if not system.load_distance_matrix():
@@ -1147,20 +1071,20 @@ def main():
         print("❌ Failed to load driver capacities")
         return
     
-    # Run the multi-strategy assignment system
+    # Run the smart optimization assignment
     print("\n🔄 Processing callout assignments...")
     
-    reassignments = system.reassign_dogs_individually()
+    reassignments = system.reassign_dogs_smart_optimization()
     
     # Ensure reassignments is always a list
     if reassignments is None:
         reassignments = []
     
-    # Write results (NOW ACTUALLY WRITES!)
+    # Write results
     if reassignments:
         write_success = system.write_results_to_sheets(reassignments)
         if write_success:
-            print(f"\n🎉 SUCCESS! Processed {len(reassignments)} callout assignments")
+            print(f"\n🎉 SUCCESS! Processed {len(reassignments)} callout assignments using 3-mile limit smart optimization")
         else:
             print(f"\n❌ Failed to write {len(reassignments)} results to Google Sheets")
     else:
