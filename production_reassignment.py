@@ -350,7 +350,205 @@ class DogReassignmentSystem:
             
         return score
 
+    def _attempt_greedy_walk_assignment(self, target_dog, target_driver, current_driver_loads, dogs_going_today):
+        """Attempt to make room for target_dog by moving one of target_driver's current dogs"""
+        print(f"         🔄 ATTEMPTING GREEDY WALK for {target_driver}:")
+        print(f"            Goal: Make room for {target_dog['dog_name']} (Groups: {target_dog['needed_groups']})")
+        
+        # Find all dogs currently assigned to target_driver
+        driver_current_dogs = [dog for dog in dogs_going_today if dog['driver'] == target_driver]
+        
+        if not driver_current_dogs:
+            print(f"            ❌ No current dogs found for {target_driver}")
+            return False, None
+        
+        print(f"            📊 {target_driver} currently has {len(driver_current_dogs)} dogs:")
+        for dog in driver_current_dogs:
+            print(f"               - {dog['dog_name']} (Groups: {dog['groups']}, {dog['num_dogs']} dogs)")
+        
+        # For each of target_driver's current dogs, see if they have close alternatives
+        moveable_dogs = []
+        
+        for current_dog in driver_current_dogs:
+            print(f"\n            🔍 Checking if {current_dog['dog_name']} can be moved:")
+            
+            # Find alternative drivers within 0.5 miles
+            close_alternatives = []
+            
+            for other_dog in dogs_going_today:
+                if other_dog['driver'] == target_driver:
+                    continue  # Skip same driver
+                
+                distance = self.get_distance(current_dog['dog_id'], other_dog['dog_id'])
+                
+                if distance <= 0.5:  # Within 0.5 miles
+                    # Check group compatibility
+                    match_type = self._determine_group_match_type(current_dog['groups'], other_dog['groups'])
+                    
+                    if match_type in ["exact", "adjacent"]:
+                        # Check if the alternative driver has capacity
+                        alt_driver = other_dog['driver']
+                        can_handle, capacity_details = self._check_driver_capacity(
+                            alt_driver, current_dog['groups'], current_dog['num_dogs'], current_driver_loads
+                        )
+                        
+                        if can_handle:
+                            close_alternatives.append({
+                                'alternative_dog': other_dog,
+                                'distance': distance,
+                                'match_type': match_type,
+                                'capacity_details': capacity_details
+                            })
+                            
+                            print(f"               ✅ {other_dog['dog_name']} → {alt_driver} at {distance:.2f}mi ({match_type}, {capacity_details})")
+                        else:
+                            print(f"               ❌ {other_dog['dog_name']} → {alt_driver} at {distance:.2f}mi (no capacity: {capacity_details})")
+                    else:
+                        print(f"               ❌ {other_dog['dog_name']} → {other_dog['driver']} at {distance:.2f}mi (no group compatibility)")
+            
+            if close_alternatives:
+                # Sort by distance (closest first) and match type preference
+                close_alternatives.sort(key=lambda x: (x['distance'], 0 if x['match_type'] == 'exact' else 1))
+                best_alternative = close_alternatives[0]
+                
+                moveable_dogs.append({
+                    'current_dog': current_dog,
+                    'best_alternative': best_alternative,
+                    'move_distance': best_alternative['distance']
+                })
+                
+                print(f"               🎯 MOVEABLE: Best option is {best_alternative['alternative_dog']['dog_name']} → {best_alternative['alternative_dog']['driver']} at {best_alternative['distance']:.2f}mi")
+            else:
+                print(f"               ❌ No close alternatives found")
+        
+        if not moveable_dogs:
+            print(f"            ❌ No dogs can be moved from {target_driver}")
+            return False, None
+        
+        # Sort moveable dogs by move distance (easiest moves first)
+        moveable_dogs.sort(key=lambda x: x['move_distance'])
+        
+        print(f"\n            🎯 MOVEABLE DOGS RANKED:")
+        for i, move in enumerate(moveable_dogs):
+            print(f"               {i+1}. {move['current_dog']['dog_name']} → can move {move['move_distance']:.2f}mi to {move['best_alternative']['alternative_dog']['driver']}")
+        
+        # Try to move the easiest dog first
+        best_move = moveable_dogs[0]
+        dog_to_move = best_move['current_dog']
+        alternative = best_move['best_alternative']
+        new_driver = alternative['alternative_dog']['driver']
+        
+        print(f"\n            🔄 EXECUTING MOVE:")
+        print(f"               Moving: {dog_to_move['dog_name']} from {target_driver} → {new_driver}")
+        print(f"               Distance: {alternative['distance']:.2f}mi via {alternative['alternative_dog']['dog_name']}")
+        print(f"               Match type: {alternative['match_type']}")
+        
+        # Create the move assignment (we'll need to reconstruct the assignment string)
+        # For now, let's assume we can move the dog with the same groups
+        groups_string = ''.join(map(str, dog_to_move['groups']))
+        move_assignment = f"{new_driver}:{groups_string}"
+        
+        move_result = {
+            'dog_id': dog_to_move['dog_id'],
+            'dog_name': dog_to_move['dog_name'],
+            'old_driver': target_driver,
+            'new_driver': new_driver,
+            'new_assignment': move_assignment,
+            'distance': alternative['distance'],
+            'reason': f"greedy_walk_move_to_make_room_for_{target_dog['dog_name']}",
+            'groups': dog_to_move['groups'],
+            'num_dogs': dog_to_move['num_dogs']
+        }
+        
+        print(f"               📝 Move assignment: {move_assignment}")
+        print(f"            ✅ GREEDY WALK SUCCESS!")
+        
+        return True, move_result
+
+    def _attempt_assignment_with_greedy_walk(self, callout_dog, all_potential_matches, current_driver_loads, dogs_going_today):
+        """Try to assign a dog, using greedy walk if capacity is the only issue"""
+        
+        if not all_potential_matches:
+            return False, None, None
+
     def get_distance(self, dog1_id: str, dog2_id: str) -> float:
+        
+        # Sort potential matches by score (best first)
+        all_potential_matches.sort(key=lambda x: x['score'])
+        
+        # Try each potential match
+        for match in all_potential_matches:
+            driver = match['driver']
+            
+            # Check capacity
+            capacity_ok, capacity_details = self._check_driver_capacity(
+                driver, callout_dog['needed_groups'], 
+                callout_dog['num_dogs'], current_driver_loads
+            )
+            
+            if capacity_ok:
+                # Direct assignment works
+                print(f"         ✅ DIRECT ASSIGNMENT: {match['dog_name']} → {driver}")
+                print(f"            Capacity: {capacity_details}")
+                
+                new_assignment = f"{driver}:{callout_dog['full_assignment_string']}"
+                
+                assignment_result = {
+                    'dog_id': callout_dog['dog_id'],
+                    'dog_name': callout_dog['dog_name'],
+                    'new_assignment': new_assignment,
+                    'driver': driver,
+                    'distance': match['distance'],
+                    'closest_dog': match['dog_name'],
+                    'reason': match['reason'],
+                    'match_type': match['match_type'],
+                    'dog_type': match['dog_type'],
+                    'score': match['score']
+                }
+                
+                return True, assignment_result, None
+            
+            else:
+                # Capacity is the issue - try greedy walk
+                print(f"         ⚠️ CAPACITY ISSUE for {driver}: {capacity_details}")
+                
+                # Only attempt greedy walk for high-quality matches (score < 15)
+                if match['score'] < 15.0:
+                    print(f"         🎯 High-quality match (score: {match['score']:.2f}) - attempting greedy walk...")
+                    
+                    walk_success, move_result = self._attempt_greedy_walk_assignment(
+                        callout_dog, driver, current_driver_loads, dogs_going_today
+                    )
+                    
+                    if walk_success:
+                        # Greedy walk succeeded - we can now assign the original dog
+                        new_assignment = f"{driver}:{callout_dog['full_assignment_string']}"
+                        
+                        assignment_result = {
+                            'dog_id': callout_dog['dog_id'],
+                            'dog_name': callout_dog['dog_name'],
+                            'new_assignment': new_assignment,
+                            'driver': driver,
+                            'distance': match['distance'],
+                            'closest_dog': match['dog_name'],
+                            'reason': f"greedy_walk_{match['reason']}",
+                            'match_type': match['match_type'],
+                            'dog_type': match['dog_type'],
+                            'score': match['score']
+                        }
+                        
+                        print(f"         🎉 GREEDY WALK ASSIGNMENT SUCCESS!")
+                        print(f"            Original dog: {callout_dog['dog_name']} → {driver}")
+                        print(f"            New assignment: {new_assignment}")
+                        
+                        return True, assignment_result, move_result
+                    else:
+                        print(f"         ❌ Greedy walk failed for {driver}")
+                else:
+                    print(f"         ⏭️ Low-quality match (score: {match['score']:.2f}) - skipping greedy walk")
+        
+        # No assignments worked
+        return False, None, None
         """Get distance between two dogs using the distance matrix"""
         try:
             if self.distance_matrix is None:
@@ -396,10 +594,11 @@ class DogReassignmentSystem:
         
         return load
 
-    def _run_greedy_assignment_with_order(self, ordered_dogs):
+    def _run_greedy_assignment_with_order(self, ordered_dogs, verbose_debug=True):
         """Run assignment keeping the exact assignment strings, only changing driver names"""
-        print("   🎯 Finding drivers with capacity - preserving exact assignment strings...")
-        print("   🔍 DEBUGGING MODE: Will show detailed decision-making process")
+        if verbose_debug:
+            print("   🎯 Finding drivers with capacity - preserving exact assignment strings...")
+            print("   🔍 DEBUGGING MODE: Will show detailed decision-making process")
         
         # Build list of all dogs currently going today (with drivers)
         dogs_going_today = []
@@ -418,13 +617,15 @@ class DogReassignmentSystem:
                     'num_dogs': assignment['num_dogs']
                 })
         
-        print(f"   📊 Found {len(dogs_going_today)} dogs currently going today")
+        if verbose_debug:
+            print(f"   📊 Found {len(dogs_going_today)} dogs currently going today")
         
         # Categorize by regular vs parking/field
         regular_dogs = [dog for dog in dogs_going_today if dog['dog_name'].lower() not in ['parking', 'field']]
         parking_field_dogs = [dog for dog in dogs_going_today if dog['dog_name'].lower() in ['parking', 'field']]
         
-        print(f"   🎯 Regular dogs: {len(regular_dogs)}, ⚠️ Parking/field dogs: {len(parking_field_dogs)}")
+        if verbose_debug:
+            print(f"   🎯 Regular dogs: {len(regular_dogs)}, ⚠️ Parking/field dogs: {len(parking_field_dogs)}")
         
         assignments = []
         current_driver_loads = {}
@@ -433,26 +634,30 @@ class DogReassignmentSystem:
         for driver in self.driver_capacities.keys():
             current_driver_loads[driver] = self.calculate_driver_load(driver)
             
-        print(f"   📋 Initial driver loads:")
-        for driver, load in current_driver_loads.items():
-            print(f"      🚗 {driver}: G1:{load['group1']}, G2:{load['group2']}, G3:{load['group3']}")
+        if verbose_debug:
+            print(f"   📋 Initial driver loads:")
+            for driver, load in current_driver_loads.items():
+                print(f"      🚗 {driver}: G1:{load['group1']}, G2:{load['group2']}, G3:{load['group3']}")
 
         # Process each callout dog in the specified order
         for callout_dog in ordered_dogs:
-            print(f"\n" + "="*60)
-            print(f"   🐕 PROCESSING: {callout_dog['dog_name']} ({callout_dog['dog_id']})")
-            print(f"       📋 Original: {callout_dog['original_callout']}")
-            print(f"       🎯 Assignment string: '{callout_dog['full_assignment_string']}'")
-            print(f"       📊 Needs capacity in groups: {callout_dog['needed_groups']}")
-            print(f"       🐕 Physical dogs: {callout_dog['num_dogs']}")
+            if verbose_debug:
+                print(f"\n" + "="*60)
+                print(f"   🐕 PROCESSING: {callout_dog['dog_name']} ({callout_dog['dog_id']})")
+                print(f"       📋 Original: {callout_dog['original_callout']}")
+                print(f"       🎯 Assignment string: '{callout_dog['full_assignment_string']}'")
+                print(f"       📊 Needs capacity in groups: {callout_dog['needed_groups']}")
+                print(f"       🐕 Physical dogs: {callout_dog['num_dogs']}")
             
             # Analyze all potential matches with detailed scoring
             all_potential_matches = []
             
-            print(f"\n   🔍 ANALYZING POTENTIAL MATCHES:")
+            if verbose_debug:
+                print(f"\n   🔍 ANALYZING POTENTIAL MATCHES:")
             
             # Check regular dogs first
-            print(f"   🎯 CHECKING REGULAR DOGS ({len(regular_dogs)} available):")
+            if verbose_debug:
+                print(f"   🎯 CHECKING REGULAR DOGS ({len(regular_dogs)} available):")
             for going_dog in regular_dogs:
                 distance = self.get_distance(callout_dog['dog_id'], going_dog['dog_id'])
                 
@@ -469,9 +674,10 @@ class DogReassignmentSystem:
                     distance_limit = 0  # No match
                     type_desc = "no group compatibility"
                 
-                print(f"      📏 {going_dog['dog_name']} (Driver: {going_dog['driver']})")
-                print(f"         Distance: {distance:.2f}mi, Groups: {going_dog['groups']} → {callout_dog['needed_groups']}")
-                print(f"         Match type: {match_type} ({type_desc}), Limit: {distance_limit}mi")
+                if verbose_debug:
+                    print(f"      📏 {going_dog['dog_name']} (Driver: {going_dog['driver']})")
+                    print(f"         Distance: {distance:.2f}mi, Groups: {going_dog['groups']} → {callout_dog['needed_groups']}")
+                    print(f"         Match type: {match_type} ({type_desc}), Limit: {distance_limit}mi")
                 
                 if distance <= distance_limit and match_type != "none":
                     # Check capacity
@@ -480,7 +686,8 @@ class DogReassignmentSystem:
                         callout_dog['num_dogs'], current_driver_loads
                     )
                     
-                    print(f"         Capacity check: {'✅ PASS' if capacity_ok else '❌ FAIL'} - {capacity_details}")
+                    if verbose_debug:
+                        print(f"         Capacity check: {'✅ PASS' if capacity_ok else '❌ FAIL'} - {capacity_details}")
                     
                     if capacity_ok:
                         # Calculate score for ranking
@@ -498,17 +705,19 @@ class DogReassignmentSystem:
                             'reason': f"regular_{match_type}_match"
                         })
                         
-                        print(f"         🎯 VALID MATCH! Score: {score:.2f}")
-                    else:
+                        if verbose_debug:
+                            print(f"         🎯 VALID MATCH! Score: {score:.2f}")
+                    elif verbose_debug:
                         print(f"         ❌ Capacity insufficient")
-                else:
+                elif verbose_debug:
                     if match_type == "none":
                         print(f"         ❌ No group compatibility")
                     else:
                         print(f"         ❌ Distance {distance:.2f}mi > {distance_limit}mi limit")
             
             # Check parking/field dogs as backup
-            print(f"\n   ⚠️ CHECKING PARKING/FIELD DOGS ({len(parking_field_dogs)} available):")
+            if verbose_debug:
+                print(f"\n   ⚠️ CHECKING PARKING/FIELD DOGS ({len(parking_field_dogs)} available):")
             for going_dog in parking_field_dogs:
                 distance = self.get_distance(callout_dog['dog_id'], going_dog['dog_id'])
                 
@@ -525,9 +734,10 @@ class DogReassignmentSystem:
                     distance_limit = 0  # No match
                     type_desc = "no group compatibility"
                 
-                print(f"      📏 {going_dog['dog_name']} (Driver: {going_dog['driver']})")
-                print(f"         Distance: {distance:.2f}mi, Groups: {going_dog['groups']} → {callout_dog['needed_groups']}")
-                print(f"         Match type: {match_type} ({type_desc}), Limit: {distance_limit}mi")
+                if verbose_debug:
+                    print(f"      📏 {going_dog['dog_name']} (Driver: {going_dog['driver']})")
+                    print(f"         Distance: {distance:.2f}mi, Groups: {going_dog['groups']} → {callout_dog['needed_groups']}")
+                    print(f"         Match type: {match_type} ({type_desc}), Limit: {distance_limit}mi")
                 
                 if distance <= distance_limit and match_type != "none":
                     # Check capacity
@@ -536,7 +746,8 @@ class DogReassignmentSystem:
                         callout_dog['num_dogs'], current_driver_loads
                     )
                     
-                    print(f"         Capacity check: {'✅ PASS' if capacity_ok else '❌ FAIL'} - {capacity_details}")
+                    if verbose_debug:
+                        print(f"         Capacity check: {'✅ PASS' if capacity_ok else '❌ FAIL'} - {capacity_details}")
                     
                     if capacity_ok:
                         # Calculate score for ranking (lower score for parking/field)
@@ -554,10 +765,11 @@ class DogReassignmentSystem:
                             'reason': f"parking_field_{match_type}_match"
                         })
                         
-                        print(f"         ⚠️ VALID BACKUP! Score: {score:.2f}")
-                    else:
+                        if verbose_debug:
+                            print(f"         ⚠️ VALID BACKUP! Score: {score:.2f}")
+                    elif verbose_debug:
                         print(f"         ❌ Capacity insufficient")
-                else:
+                elif verbose_debug:
                     if match_type == "none":
                         print(f"         ❌ No group compatibility")
                     else:
@@ -566,10 +778,11 @@ class DogReassignmentSystem:
             # Sort potential matches by score (lower is better)
             all_potential_matches.sort(key=lambda x: x['score'])
             
-            print(f"\n   📊 MATCH RANKING SUMMARY:")
-            print(f"      Found {len(all_potential_matches)} valid potential matches")
+            if verbose_debug:
+                print(f"\n   📊 MATCH RANKING SUMMARY:")
+                print(f"      Found {len(all_potential_matches)} valid potential matches")
             
-            if all_potential_matches:
+            if all_potential_matches and verbose_debug:
                 print(f"      🏆 TOP 5 CANDIDATES:")
                 for i, match in enumerate(all_potential_matches[:5]):
                     rank_emoji = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"][i]
@@ -579,84 +792,142 @@ class DogReassignmentSystem:
                     print(f"         {rank_emoji} {type_emoji}{match_emoji} {match['dog_name']} → Driver {match['driver']}")
                     print(f"            Score: {match['score']:.2f}, Distance: {match['distance']:.2f}mi, {match['match_type']} match")
             
-            # Try to assign to the best available match
+            # Try to assign to the best available match (with greedy walk if needed)
             assigned = False
+            move_result = None
             
             if all_potential_matches:
-                best_match = all_potential_matches[0]
+                if verbose_debug:
+                    print(f"\n   🎯 ATTEMPTING ASSIGNMENT (with greedy walk support):")
                 
-                print(f"\n   🎯 SELECTING BEST MATCH:")
-                print(f"      Chosen: {best_match['dog_name']} → Driver {best_match['driver']}")
-                print(f"      Reason: {best_match['reason']} (score: {best_match['score']:.2f})")
+                # Use greedy walk assignment logic
+                assignment_success, assignment_result, move_result = self._attempt_assignment_with_greedy_walk(
+                    callout_dog, all_potential_matches, current_driver_loads, dogs_going_today
+                )
                 
-                # Create new assignment
-                new_assignment = f"{best_match['driver']}:{callout_dog['full_assignment_string']}"
-                
-                type_indicator = "🎯" if best_match['dog_type'] == 'regular' else "⚠️"
-                match_indicator = "🎯" if best_match['match_type'] == 'exact' else "📍"
-                
-                print(f"      📝 New assignment: {new_assignment}")
-                
-                assignments.append({
-                    'dog_id': callout_dog['dog_id'],
-                    'dog_name': callout_dog['dog_name'],
-                    'new_assignment': new_assignment,
-                    'driver': best_match['driver'],
-                    'distance': best_match['distance'],
-                    'closest_dog': best_match['dog_name'],
-                    'reason': best_match['reason'],
-                    'match_type': best_match['match_type'],
-                    'dog_type': best_match['dog_type'],
-                    'score': best_match['score']
-                })
-                
-                # UPDATE STATE: Add this dog's load to the driver
-                if best_match['driver'] not in current_driver_loads:
-                    current_driver_loads[best_match['driver']] = {'group1': 0, 'group2': 0, 'group3': 0}
-                
-                for group in callout_dog['needed_groups']:
-                    group_key = f'group{group}'
-                    current_driver_loads[best_match['driver']][group_key] += callout_dog['num_dogs']
-                
-                print(f"      📊 Updated {best_match['driver']} load: {current_driver_loads[best_match['driver']]}")
-                
-                # Add to dogs going today list for future iterations
-                dogs_going_today.append({
-                    'dog_id': callout_dog['dog_id'],
-                    'dog_name': callout_dog['dog_name'],
-                    'driver': best_match['driver'],
-                    'groups': callout_dog['needed_groups'],
-                    'num_dogs': callout_dog['num_dogs']
-                })
-                
-                # Update the appropriate category
-                if best_match['dog_type'] == 'regular':
-                    regular_dogs.append({
+                if assignment_success:
+                    # APPLY THE MOVE FIRST (if there was one)
+                    if move_result:
+                        if verbose_debug:
+                            print(f"\n      🔄 APPLYING GREEDY WALK MOVE:")
+                            print(f"         Moving: {move_result['dog_name']} from {move_result['old_driver']} → {move_result['new_driver']}")
+                        
+                        # Add the move to our assignments list so it gets written to sheets
+                        # We need to track this as a special "move" assignment
+                        move_assignment_record = {
+                            'dog_id': move_result['dog_id'],
+                            'dog_name': move_result['dog_name'],
+                            'new_assignment': move_result['new_assignment'],
+                            'driver': move_result['new_driver'],
+                            'distance': move_result['distance'],
+                            'closest_dog': move_result.get('closest_dog', 'greedy_walk'),
+                            'reason': move_result['reason'],
+                            'match_type': 'greedy_walk_move',
+                            'dog_type': 'moved_existing',
+                            'score': 0,  # Special score for moves
+                            'is_greedy_walk_move': True,
+                            'original_assignment': f"{move_result['old_driver']}:{''.join(map(str, move_result['groups']))}"
+                        }
+                        assignments.append(move_assignment_record)
+                        
+                        # Update driver loads for the move
+                        # Remove from old driver
+                        if move_result['old_driver'] in current_driver_loads:
+                            for group in move_result['groups']:
+                                group_key = f'group{group}'
+                                current_driver_loads[move_result['old_driver']][group_key] -= move_result['num_dogs']
+                        
+                        # Add to new driver
+                        if move_result['new_driver'] not in current_driver_loads:
+                            current_driver_loads[move_result['new_driver']] = {'group1': 0, 'group2': 0, 'group3': 0}
+                        for group in move_result['groups']:
+                            group_key = f'group{group}'
+                            current_driver_loads[move_result['new_driver']][group_key] += move_result['num_dogs']
+                        
+                        # Update dogs_going_today list
+                        for i, dog in enumerate(dogs_going_today):
+                            if dog['dog_id'] == move_result['dog_id']:
+                                dogs_going_today[i]['driver'] = move_result['new_driver']
+                                break
+                        
+                        # Update regular_dogs and parking_field_dogs lists
+                        for dog_list in [regular_dogs, parking_field_dogs]:
+                            for i, dog in enumerate(dog_list):
+                                if dog['dog_id'] == move_result['dog_id']:
+                                    dog_list[i]['driver'] = move_result['new_driver']
+                                    break
+                        
+                        if verbose_debug:
+                            print(f"         📊 Updated loads after move:")
+                            print(f"            {move_result['old_driver']}: {current_driver_loads.get(move_result['old_driver'], {})}")
+                            print(f"            {move_result['new_driver']}: {current_driver_loads.get(move_result['new_driver'], {})}")
+                            print(f"         📝 Move will be tracked: Callout = original assignment, Combined = new assignment")                    
+                    # NOW APPLY THE MAIN ASSIGNMENT
+                    assignments.append(assignment_result)
+                    
+                    if verbose_debug:
+                        print(f"\n      ✅ MAIN ASSIGNMENT:")
+                        print(f"         {assignment_result['dog_name']} → {assignment_result['new_assignment']}")
+                        print(f"         Distance: {assignment_result['distance']:.1f}mi via {assignment_result['closest_dog']}")
+                        if move_result:
+                            print(f"         🎯 GREEDY WALK: Moved {move_result['dog_name']} to make room")
+                    
+                    # Update driver loads for the main assignment
+                    driver = assignment_result['driver']
+                    if driver not in current_driver_loads:
+                        current_driver_loads[driver] = {'group1': 0, 'group2': 0, 'group3': 0}
+                    
+                    for group in callout_dog['needed_groups']:
+                        group_key = f'group{group}'
+                        current_driver_loads[driver][group_key] += callout_dog['num_dogs']
+                    
+                    if verbose_debug:
+                        print(f"         📊 Updated {driver} load: {current_driver_loads[driver]}")
+                    
+                    # Add to dogs going today list for future iterations
+                    dogs_going_today.append({
                         'dog_id': callout_dog['dog_id'],
                         'dog_name': callout_dog['dog_name'],
-                        'driver': best_match['driver'],
+                        'driver': driver,
                         'groups': callout_dog['needed_groups'],
                         'num_dogs': callout_dog['num_dogs']
                     })
-                else:
-                    parking_field_dogs.append({
-                        'dog_id': callout_dog['dog_id'],
-                        'dog_name': callout_dog['dog_name'],
-                        'driver': best_match['driver'],
-                        'groups': callout_dog['needed_groups'],
-                        'num_dogs': callout_dog['num_dogs']
-                    })
-                
-                assigned = True
-                print(f"      ✅ ASSIGNMENT SUCCESSFUL!")
+                    
+                    # Update the appropriate category
+                    dog_type = assignment_result.get('dog_type', 'regular')
+                    if dog_type == 'regular':
+                        regular_dogs.append({
+                            'dog_id': callout_dog['dog_id'],
+                            'dog_name': callout_dog['dog_name'],
+                            'driver': driver,
+                            'groups': callout_dog['needed_groups'],
+                            'num_dogs': callout_dog['num_dogs']
+                        })
+                    else:
+                        parking_field_dogs.append({
+                            'dog_id': callout_dog['dog_id'],
+                            'dog_name': callout_dog['dog_name'],
+                            'driver': driver,
+                            'groups': callout_dog['needed_groups'],
+                            'num_dogs': callout_dog['num_dogs']
+                        })
+                    
+                    assigned = True
+                    if verbose_debug:
+                        print(f"      ✅ ASSIGNMENT COMPLETE!")
+                        if move_result:
+                            print(f"      📊 Total changes: 1 new assignment + 1 greedy walk move")
+                        else:
+                            print(f"      📊 Total changes: 1 direct assignment")
             
             if not assigned:
-                print(f"\n   ❌ NO VALID ASSIGNMENT FOUND")
-                print(f"      All potential drivers either:")
-                print(f"      - Too far away (>3mi for regular exact, >0.6mi for regular adjacent)")
-                print(f"      - Lack capacity in needed groups {callout_dog['needed_groups']}")
-                print(f"      - No group compatibility")
-                print(f"      - Parking/field too far (>0.4mi exact, >0.2mi adjacent)")
+                if verbose_debug:
+                    print(f"\n   ❌ NO VALID ASSIGNMENT FOUND")
+                    print(f"      All potential drivers either:")
+                    print(f"      - Too far away (>3mi for regular exact, >0.6mi for regular adjacent)")
+                    print(f"      - Lack capacity in needed groups {callout_dog['needed_groups']} (even with greedy walk)")
+                    print(f"      - No group compatibility")
+                    print(f"      - Parking/field too far (>0.4mi exact, >0.2mi adjacent)")
         
         return assignments
 
@@ -947,7 +1218,7 @@ class DogReassignmentSystem:
             print(f"   Order: {' → '.join(order_names)}")
             
             # Run greedy assignment with this specific order
-            assignments = self._run_greedy_assignment_with_order(list(dog_order))
+            assignments = self._run_greedy_assignment_with_order(list(dog_order), verbose_debug=False)
             
             # Calculate total cost for this permutation
             total_cost = self._calculate_permutation_cost(assignments, list(dog_order))
@@ -1031,7 +1302,8 @@ class DogReassignmentSystem:
             return self._hybrid_critical_subset_assignment(dogs_to_reassign)
         else:
             print(f"🚀 Large number of dogs - using dynamic constraint-based assignment")
-            return self._dynamic_constraint_assignment(dogs_to_reassign)
+            # For 20+ dogs, use adaptive debugging (full for first 3 iterations, summary after)
+            return self._dynamic_constraint_assignment(dogs_to_reassign, debug_verbosity="adaptive")
 
     def _hybrid_critical_subset_assignment(self, dogs_to_reassign):
         """Hybrid approach: Try permutations on most critical dogs, greedy for rest"""
@@ -1072,7 +1344,7 @@ class DogReassignmentSystem:
             full_order = list(critical_order) + remaining_dogs
             
             # Run assignment
-            assignments = self._run_greedy_assignment_with_order(full_order)
+            assignments = self._run_greedy_assignment_with_order(full_order, verbose_debug=False)
             cost = self._calculate_permutation_cost(assignments, full_order)
             
             if perm_idx < 5 or cost < best_cost:  # Show first 5 and any improvements
@@ -1099,11 +1371,16 @@ class DogReassignmentSystem:
         
         return best_assignments
 
-    def _dynamic_constraint_assignment(self, dogs_to_reassign):
+    def _dynamic_constraint_assignment(self, dogs_to_reassign, debug_verbosity="full"):
         """Dynamic constraint-based assignment: Pick next dog based on current state"""
         print("\n🚀 DYNAMIC CONSTRAINT-BASED ASSIGNMENT:")
         print("   🎯 Strategy: Always pick the most constrained remaining dog next")
         print("   🔄 Recalculate constraints after each assignment")
+        
+        if debug_verbosity == "full":
+            print("   🔍 DEBUG MODE: Full detailed analysis for each assignment")
+        elif debug_verbosity == "summary":
+            print("   📊 SUMMARY MODE: Constraint analysis + assignment results only")
         
         start_time = time.time()
         
@@ -1134,6 +1411,7 @@ class DogReassignmentSystem:
             current_driver_loads[driver] = self.calculate_driver_load(driver)
         
         print(f"\n🔄 DYNAMIC ASSIGNMENT ITERATIONS:")
+        print(f"💡 TIP: Each iteration shows constraint analysis + detailed assignment debugging")
         
         while remaining_dogs:
             iteration += 1
@@ -1210,8 +1488,17 @@ class DogReassignmentSystem:
             print(f"      Constraint score: {constraint_scores[0]['constraint_score']:.1f}")
             print(f"      Valid options: {constraint_scores[0]['valid_options']}")
             
-            # Try to assign this dog
-            single_dog_assignment = self._run_greedy_assignment_with_order([most_constrained])
+            # Try to assign this dog  
+            print(f"\n   🎯 ATTEMPTING ASSIGNMENT:")
+            print(f"      🐕 Dog: {most_constrained['dog_name']}")
+            print(f"      📊 Groups needed: {most_constrained['needed_groups']}")
+            print(f"      🎯 Assignment string: '{most_constrained['full_assignment_string']}'")
+            
+            # Use appropriate debug level (full debug for first few, summary for later iterations)
+            verbose_debug = (iteration <= 3) if debug_verbosity == "adaptive" else (debug_verbosity == "full")
+            
+            # Enable detailed debugging for this assignment
+            single_dog_assignment = self._run_greedy_assignment_with_order([most_constrained], verbose_debug=verbose_debug)
             
             if single_dog_assignment:
                 # Success! Update state
@@ -1273,46 +1560,76 @@ class DogReassignmentSystem:
         backup_matches = [a for a in assignments if a.get('dog_type') == 'parking_field' and a.get('match_type') == 'exact']
         last_resort = [a for a in assignments if a.get('dog_type') == 'parking_field' and a.get('match_type') == 'adjacent']
         
-        if perfect_matches:
-            print(f"\n      🎯 PERFECT (regular exact matches):")
-            for assignment in perfect_matches:
-                print(f"         ✅ {assignment['dog_name']} → {assignment['new_assignment']}")
-                print(f"            Distance: {assignment['distance']:.1f}mi via {assignment['closest_dog']}")
+        # Separate greedy walk assignments
+        greedy_walk_assignments = [a for a in assignments if 'greedy_walk' in a.get('reason', '')]
+        direct_assignments = [a for a in assignments if 'greedy_walk' not in a.get('reason', '')]
+        
+        if greedy_walk_assignments:
+            print(f"\n      🔄 GREEDY WALK SUCCESSES (made room by moving existing dogs):")
+            for assignment in greedy_walk_assignments:
+                assignment_type = "🎯" if assignment.get('dog_type') == 'regular' else "⚠️"
+                match_type = "exact" if assignment.get('match_type') == 'exact' else "adjacent"
+                print(f"         {assignment_type} {assignment['dog_name']} → {assignment['new_assignment']}")
+                print(f"            Distance: {assignment['distance']:.1f}mi via {assignment['closest_dog']} ({match_type})")
+                print(f"            🔄 Required moving another dog to make capacity")
                 if 'score' in assignment:
                     print(f"            Score: {assignment['score']:.2f}, Reason: {assignment.get('reason', 'N/A')}")
+        
+        if perfect_matches:
+            perfect_direct = [a for a in perfect_matches if a not in greedy_walk_assignments]
+            if perfect_direct:
+                print(f"\n      🎯 PERFECT (regular exact matches - direct):")
+                for assignment in perfect_direct:
+                    print(f"         ✅ {assignment['dog_name']} → {assignment['new_assignment']}")
+                    print(f"            Distance: {assignment['distance']:.1f}mi via {assignment['closest_dog']}")
+                    if 'score' in assignment:
+                        print(f"            Score: {assignment['score']:.2f}, Reason: {assignment.get('reason', 'N/A')}")
         
         if good_matches:
-            print(f"\n      📍 GOOD (regular adjacent matches):")
-            for assignment in good_matches:
-                print(f"         ✅ {assignment['dog_name']} → {assignment['new_assignment']}")
-                print(f"            Distance: {assignment['distance']:.1f}mi via {assignment['closest_dog']}")
-                if 'score' in assignment:
-                    print(f"            Score: {assignment['score']:.2f}, Reason: {assignment.get('reason', 'N/A')}")
+            good_direct = [a for a in good_matches if a not in greedy_walk_assignments]
+            if good_direct:
+                print(f"\n      📍 GOOD (regular adjacent matches - direct):")
+                for assignment in good_direct:
+                    print(f"         ✅ {assignment['dog_name']} → {assignment['new_assignment']}")
+                    print(f"            Distance: {assignment['distance']:.1f}mi via {assignment['closest_dog']}")
+                    if 'score' in assignment:
+                        print(f"            Score: {assignment['score']:.2f}, Reason: {assignment.get('reason', 'N/A')}")
         
         if backup_matches:
-            print(f"\n      🔄 BACKUP (parking/field exact matches ≤0.4mi):")
-            for assignment in backup_matches:
-                print(f"         ⚠️ {assignment['dog_name']} → {assignment['new_assignment']}")
-                print(f"            Distance: {assignment['distance']:.1f}mi via {assignment['closest_dog']}")
-                if 'score' in assignment:
-                    print(f"            Score: {assignment['score']:.2f}, Reason: {assignment.get('reason', 'N/A')}")
+            backup_direct = [a for a in backup_matches if a not in greedy_walk_assignments]
+            if backup_direct:
+                print(f"\n      🔄 BACKUP (parking/field exact matches ≤0.4mi - direct):")
+                for assignment in backup_direct:
+                    print(f"         ⚠️ {assignment['dog_name']} → {assignment['new_assignment']}")
+                    print(f"            Distance: {assignment['distance']:.1f}mi via {assignment['closest_dog']}")
+                    if 'score' in assignment:
+                        print(f"            Score: {assignment['score']:.2f}, Reason: {assignment.get('reason', 'N/A')}")
         
         if last_resort:
-            print(f"\n      🆘 LAST RESORT (parking/field adjacent matches ≤0.2mi):")
-            for assignment in last_resort:
-                print(f"         🆘 {assignment['dog_name']} → {assignment['new_assignment']}")
-                print(f"            Distance: {assignment['distance']:.1f}mi via {assignment['closest_dog']}")
-                if 'score' in assignment:
-                    print(f"            Score: {assignment['score']:.2f}, Reason: {assignment.get('reason', 'N/A')}")
+            last_resort_direct = [a for a in last_resort if a not in greedy_walk_assignments]
+            if last_resort_direct:
+                print(f"\n      🆘 LAST RESORT (parking/field adjacent matches ≤0.2mi - direct):")
+                for assignment in last_resort_direct:
+                    print(f"         🆘 {assignment['dog_name']} → {assignment['new_assignment']}")
+                    print(f"            Distance: {assignment['distance']:.1f}mi via {assignment['closest_dog']}")
+                    if 'score' in assignment:
+                        print(f"            Score: {assignment['score']:.2f}, Reason: {assignment.get('reason', 'N/A')}")
         
         # Show overall summary
         print(f"\n      📊 ASSIGNMENT SUMMARY:")
-        print(f"         🎯 Perfect matches: {len(perfect_matches)}")
-        print(f"         📍 Good matches: {len(good_matches)}")
-        print(f"         🔄 Backup matches: {len(backup_matches)}")  
-        print(f"         🆘 Last resort: {len(last_resort)}")
+        print(f"         🔄 Greedy walk successes: {len(greedy_walk_assignments)}")
+        print(f"         🎯 Perfect direct matches: {len([a for a in perfect_matches if a not in greedy_walk_assignments])}")
+        print(f"         📍 Good direct matches: {len([a for a in good_matches if a not in greedy_walk_assignments])}")
+        print(f"         🔄 Backup direct matches: {len([a for a in backup_matches if a not in greedy_walk_assignments])}")  
+        print(f"         🆘 Last resort direct: {len([a for a in last_resort if a not in greedy_walk_assignments])}")
         if assignments:
             print(f"         📏 Average distance: {sum(a['distance'] for a in assignments) / len(assignments):.2f}mi")
+        
+        if greedy_walk_assignments:
+            print(f"\n      🎯 GREEDY WALK IMPACT:")
+            print(f"         Without greedy walk: {len(direct_assignments)} assignments")
+            print(f"         With greedy walk: {len(assignments)} assignments (+{len(greedy_walk_assignments)})")
+            print(f"         Improvement: {len(greedy_walk_assignments) / len(assignments) * 100:.1f}% of assignments used greedy walk")
 
     def write_results_to_sheets(self, reassignments):
         """Write reassignment results back to Google Sheets"""
@@ -1377,17 +1694,27 @@ class DogReassignmentSystem:
                 print("❌ Could not find 'Dog ID' column")
                 return False
             
-            # Always use Column H (Combined column) - index 7
-            target_col = 7
-            print(f"📍 Writing to Column H (Combined) at index {target_col}")
+            # Column indices
+            combined_col = 7   # Column H (Combined)
+            callout_col = 10   # Column K (Callout)
+            
+            print(f"📍 Writing to Column H (Combined) at index {combined_col}")
+            print(f"📍 Writing to Column K (Callout) at index {callout_col} for moved dogs")
+            
+            # Separate regular assignments from greedy walk moves
+            regular_assignments = [a for a in reassignments if not a.get('is_greedy_walk_move', False)]
+            greedy_walk_moves = [a for a in reassignments if a.get('is_greedy_walk_move', False)]
+            
+            print(f"\n🔍 Processing assignments:")
+            print(f"   📊 Regular callout assignments: {len(regular_assignments)}")
+            print(f"   🔄 Greedy walk moves: {len(greedy_walk_moves)}")
             
             # Prepare batch updates
             updates = []
             updates_count = 0
             
-            print(f"\n🔍 Processing {len(reassignments)} reassignments...")
-            
-            for assignment in reassignments:
+            # Process regular assignments (write to Combined column only)
+            for assignment in regular_assignments:
                 dog_id = str(assignment['dog_id']).strip()
                 new_assignment = assignment['new_assignment']
                 
@@ -1399,7 +1726,7 @@ class DogReassignmentSystem:
                         
                         if current_dog_id == dog_id:
                             # Convert to A1 notation (row is 1-indexed, col is 1-indexed)
-                            cell_address = gspread.utils.rowcol_to_a1(row_idx + 1, target_col + 1)
+                            cell_address = gspread.utils.rowcol_to_a1(row_idx + 1, combined_col + 1)
                             
                             updates.append({
                                 'range': cell_address,
@@ -1407,31 +1734,69 @@ class DogReassignmentSystem:
                             })
                             
                             updates_count += 1
-                            print(f"  ✅ {dog_id} → {new_assignment} (cell {cell_address})")
+                            print(f"  ✅ {dog_id} → {new_assignment} (cell {cell_address}) [REGULAR]")
                             found = True
                             break
                 
                 if not found:
                     print(f"  ⚠️ Could not find row for dog ID: {dog_id}")
             
+            # Process greedy walk moves (write to BOTH Callout and Combined columns)
+            for move in greedy_walk_moves:
+                dog_id = str(move['dog_id']).strip()
+                new_assignment = move['new_assignment']
+                original_assignment = move['original_assignment']
+                
+                # Find the row for this dog ID
+                found = False
+                for row_idx in range(1, len(all_data)):  # Skip header row
+                    if dog_id_col < len(all_data[row_idx]):
+                        current_dog_id = str(all_data[row_idx][dog_id_col]).strip()
+                        
+                        if current_dog_id == dog_id:
+                            # Write original assignment to Callout column (K)
+                            callout_cell_address = gspread.utils.rowcol_to_a1(row_idx + 1, callout_col + 1)
+                            updates.append({
+                                'range': callout_cell_address,
+                                'values': [[original_assignment]]
+                            })
+                            
+                            # Write new assignment to Combined column (H)
+                            combined_cell_address = gspread.utils.rowcol_to_a1(row_idx + 1, combined_col + 1)
+                            updates.append({
+                                'range': combined_cell_address,
+                                'values': [[new_assignment]]
+                            })
+                            
+                            updates_count += 2  # Two cells updated
+                            print(f"  🔄 {dog_id} MOVED:")
+                            print(f"     Callout (K): {original_assignment} (cell {callout_cell_address})")
+                            print(f"     Combined (H): {new_assignment} (cell {combined_cell_address})")
+                            found = True
+                            break
+                
+                if not found:
+                    print(f"  ⚠️ Could not find row for moved dog ID: {dog_id}")
+            
             if not updates:
                 print("❌ No valid updates to make")
                 return False
             
             # Execute batch update
-            print(f"\n📤 Sending {len(updates)} updates to Google Sheets...")
+            print(f"\n📤 Sending {len(updates)} cell updates to Google Sheets...")
             
             # Use batch_update for efficiency
             worksheet.batch_update(updates)
             
-            print(f"✅ Successfully updated {updates_count} assignments in Google Sheets!")
+            assignment_count = len(regular_assignments) + len(greedy_walk_moves)
+            print(f"✅ Successfully updated {assignment_count} assignments ({len(regular_assignments)} regular + {len(greedy_walk_moves)} moves) in Google Sheets!")
             
             # Optional: Send Slack notification if webhook is configured
             slack_webhook = os.environ.get('SLACK_WEBHOOK_URL')
             if slack_webhook:
                 try:
                     slack_message = {
-                        "text": f"🐕 Dog Reassignment Complete: Updated {updates_count} assignments using dynamic constraint-based optimization"
+                        "text": f"🐕 Dog Reassignment Complete: Updated {assignment_count} assignments ({len(regular_assignments)} regular + {len(greedy_walk_moves)} greedy walk moves) using dynamic constraint-based optimization with greedy walk"
                     }
                     response = requests.post(slack_webhook, json=slack_message, timeout=10)
                     if response.status_code == 200:
@@ -1454,6 +1819,8 @@ def main():
     print("🚀 Production Dog Reassignment System - DYNAMIC CONSTRAINT OPTIMIZATION")
     print("🎯 Smart approaches: ≤6 dogs=exhaustive, ≤12 dogs=hybrid, >12 dogs=dynamic")
     print("🎯 Group-based matching: same groups ≤3mi, adjacent ≤0.6mi, parking ≤0.4mi/0.2mi")
+    print("🔄 Greedy walk: Makes room by moving existing dogs <0.5mi to alternative drivers")
+    print("🔍 DEBUGGING: Full detailed analysis showing why each dog is selected")
     print("=" * 75)
     
     # Initialize system
@@ -1492,7 +1859,7 @@ def main():
     if reassignments:
         write_success = system.write_results_to_sheets(reassignments)
         if write_success:
-            print(f"\n🎉 SUCCESS! Processed {len(reassignments)} callout assignments using dynamic constraint-based optimization")
+            print(f"\n🎉 SUCCESS! Processed {len(reassignments)} callout assignments using dynamic constraint-based optimization with greedy walk")
         else:
             print(f"\n❌ Failed to write {len(reassignments)} results to Google Sheets")
     else:
