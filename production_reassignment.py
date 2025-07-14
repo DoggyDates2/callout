@@ -1,5 +1,5 @@
 # production_reassignment.py
-# Complete dog reassignment system with smart optimization and 3-mile distance limit
+# Complete dog reassignment system with smart optimization, 3-mile distance limit, and regular dogs priority
 
 import pandas as pd
 import numpy as np
@@ -22,10 +22,10 @@ class DogReassignmentSystem:
         self.DISTANCE_MATRIX_URL = "https://docs.google.com/spreadsheets/d/1421xCS86YH6hx0RcuZCyXkyBK_xl-VDSlXyDNvw09Pg/export?format=csv&gid=398422902"
         self.MAP_SHEET_URL = "https://docs.google.com/spreadsheets/d/1mg8d5CLxSR54KhNUL8SpL5jzrGN-bghTsC9vxSK8lR0/export?format=csv&gid=267803750"
         
-        # DISTANCE LIMITS - Much stricter (3 miles max)
+        # DISTANCE LIMITS - Stricter limits with different thresholds
         self.MAX_DISTANCE = 3.0  # Hard limit: no assignments beyond 3 miles
-        self.EXACT_MATCH_MAX_DISTANCE = 3.0  # Same as max - within 3 miles
-        self.ADJACENT_MATCH_MAX_DISTANCE = 3.0  # Same limit for all
+        self.EXACT_MATCH_MAX_DISTANCE = 3.0  # Exact group matches: 3 miles
+        self.ADJACENT_MATCH_MAX_DISTANCE = 0.6  # Adjacent/compatible groups: 0.6 miles (much stricter)
         self.EXCLUSION_DISTANCE = 100.0  # Still recognize 100+ as "do not assign" placeholders
         
         # Data containers
@@ -332,10 +332,12 @@ class DogReassignmentSystem:
 
     def _run_greedy_assignment_with_order(self, ordered_dogs):
         """Run assignment keeping the exact assignment strings, only changing driver names"""
-        print("   🎯 Finding drivers with capacity - preserving exact assignment strings...")
+        print("   🎯 Finding drivers with capacity - prioritizing regular dogs over parking/field...")
         
         # Build list of all dogs currently going today (with drivers)
-        dogs_going_today = []
+        regular_dogs_going_today = []
+        parking_field_dogs_going_today = []
+        
         for assignment in self.dog_assignments:
             combined = assignment.get('combined', '')
             if combined and ':' in combined:
@@ -343,13 +345,22 @@ class DogReassignmentSystem:
                 assignment_string = combined.split(':', 1)[1].strip()
                 groups = self._extract_groups_for_capacity_check(assignment_string)
                 
-                dogs_going_today.append({
+                dog_info = {
                     'dog_id': assignment['dog_id'],
                     'dog_name': assignment['dog_name'],
                     'driver': driver,
                     'groups': groups,
                     'num_dogs': assignment['num_dogs']
-                })
+                }
+                
+                # Check if this is a parking or field dog
+                dog_name = str(assignment['dog_name']).lower().strip()
+                if 'parking' in dog_name or 'field' in dog_name:
+                    parking_field_dogs_going_today.append(dog_info)
+                else:
+                    regular_dogs_going_today.append(dog_info)
+        
+        print(f"       📊 Available: {len(regular_dogs_going_today)} regular dogs, {len(parking_field_dogs_going_today)} parking/field dogs")
         
         assignments = []
         current_driver_loads = {}
@@ -366,35 +377,114 @@ class DogReassignmentSystem:
             print(f"       Needs capacity in groups: {callout_dog['needed_groups']}")
             print(f"       Physical dogs: {callout_dog['num_dogs']}")
             
-            # Find ALL distances to dogs going today
-            distances_to_going_dogs = []
+            # PRIORITY 1: Try exact matches in regular dogs first (up to 3 miles)
+            exact_match_distances = []
+            adjacent_match_distances = []
             
-            for going_dog in dogs_going_today:
+            for going_dog in regular_dogs_going_today:
                 distance = self.get_distance(callout_dog['dog_id'], going_dog['dog_id'])
                 
-                # Filter out dogs more than 3 miles away
-                if distance <= 3.0:
-                    distances_to_going_dogs.append({
+                # Check if this would be an exact match
+                needed_groups = set(callout_dog['needed_groups'])
+                current_groups = set(going_dog['groups'])
+                is_exact_match = needed_groups == current_groups
+                
+                if is_exact_match and distance <= self.EXACT_MATCH_MAX_DISTANCE:
+                    exact_match_distances.append({
                         'dog_id': going_dog['dog_id'],
                         'dog_name': going_dog['dog_name'],
                         'driver': going_dog['driver'],
                         'groups': going_dog['groups'],
-                        'distance': distance
+                        'distance': distance,
+                        'type': 'regular',
+                        'match_type': 'exact'
+                    })
+                elif not is_exact_match and distance <= self.ADJACENT_MATCH_MAX_DISTANCE:
+                    adjacent_match_distances.append({
+                        'dog_id': going_dog['dog_id'],
+                        'dog_name': going_dog['dog_name'],
+                        'driver': going_dog['driver'],
+                        'groups': going_dog['groups'],
+                        'distance': distance,
+                        'type': 'regular',
+                        'match_type': 'adjacent'
                     })
             
-            # Sort by distance (closest first)
-            distances_to_going_dogs.sort(key=lambda x: x['distance'])
+            # PRIORITY 2: Try exact matches in parking/field dogs (up to 3 miles)
+            exact_match_parking_distances = []
+            adjacent_match_parking_distances = []
             
-            print(f"       📏 Found {len(distances_to_going_dogs)} dogs within 3.0 miles")
+            for going_dog in parking_field_dogs_going_today:
+                distance = self.get_distance(callout_dog['dog_id'], going_dog['dog_id'])
+                
+                # Check if this would be an exact match
+                needed_groups = set(callout_dog['needed_groups'])
+                current_groups = set(going_dog['groups'])
+                is_exact_match = needed_groups == current_groups
+                
+                if is_exact_match and distance <= self.EXACT_MATCH_MAX_DISTANCE:
+                    exact_match_parking_distances.append({
+                        'dog_id': going_dog['dog_id'],
+                        'dog_name': going_dog['dog_name'],
+                        'driver': going_dog['driver'],
+                        'groups': going_dog['groups'],
+                        'distance': distance,
+                        'type': 'parking/field',
+                        'match_type': 'exact'
+                    })
+                elif not is_exact_match and distance <= self.ADJACENT_MATCH_MAX_DISTANCE:
+                    adjacent_match_parking_distances.append({
+                        'dog_id': going_dog['dog_id'],
+                        'dog_name': going_dog['dog_name'],
+                        'driver': going_dog['driver'],
+                        'groups': going_dog['groups'],
+                        'distance': distance,
+                        'type': 'parking/field',
+                        'match_type': 'adjacent'
+                    })
             
-            # Try to assign to drivers in order of distance (closest first)
+            # Sort each list by distance (closest first)
+            exact_match_distances.sort(key=lambda x: x['distance'])
+            adjacent_match_distances.sort(key=lambda x: x['distance'])
+            exact_match_parking_distances.sort(key=lambda x: x['distance'])
+            adjacent_match_parking_distances.sort(key=lambda x: x['distance'])
+            
+            # Combine in priority order: 
+            # 1. Exact matches in regular dogs
+            # 2. Adjacent matches in regular dogs  
+            # 3. Exact matches in parking/field dogs
+            # 4. Adjacent matches in parking/field dogs
+            all_distances = (exact_match_distances + adjacent_match_distances + 
+                           exact_match_parking_distances + adjacent_match_parking_distances)
+            
+            print(f"       📏 Found matches within limits:")
+            print(f"         🎯 Regular: {len(exact_match_distances)} exact (≤{self.EXACT_MATCH_MAX_DISTANCE}mi) + {len(adjacent_match_distances)} adjacent (≤{self.ADJACENT_MATCH_MAX_DISTANCE}mi)")
+            print(f"         ⚠️ Parking/Field: {len(exact_match_parking_distances)} exact + {len(adjacent_match_parking_distances)} adjacent")
+            
+            if exact_match_distances:
+                print(f"       🎯 Trying exact matches in regular dogs first...")
+            elif adjacent_match_distances:
+                print(f"       🎯 No exact regular matches - trying adjacent regular matches...")
+            elif exact_match_parking_distances:
+                print(f"       ⚠️ No regular matches - trying exact parking/field matches...")
+            elif adjacent_match_parking_distances:
+                print(f"       ⚠️ No regular matches - trying adjacent parking/field matches as last resort...")
+            else:
+                print(f"       ❌ No valid matches found within distance limits")
+            
+            # Try to assign to drivers in priority order
             assigned = False
             
-            for close_dog in distances_to_going_dogs:
+            for close_dog in all_distances:
                 driver = close_dog['driver']
                 distance = close_dog['distance']
+                dog_type = close_dog['type']
+                match_type = close_dog['match_type']
                 
-                print(f"\n       🚗 Checking driver {driver} (via {close_dog['dog_name']} at {distance:.1f}mi)")
+                type_indicator = "🎯" if dog_type == 'regular' else "⚠️"
+                match_indicator = "🎯" if match_type == 'exact' else "📍"
+                
+                print(f"\n       🚗 Checking driver {driver} {type_indicator}{match_indicator} (via {close_dog['dog_name']} at {distance:.1f}mi - {dog_type} {match_type} match)")
                 
                 # Check if this driver has capacity in ALL needed groups
                 can_handle_all_groups = True
@@ -418,12 +508,27 @@ class DogReassignmentSystem:
                     print(f"          ❌ Insufficient capacity")
                     continue
                 
-                # All dogs in the list are already within 3 miles, so no additional distance check needed
+                # Distance check already passed during filtering, so we know it's within limits
+                max_distance = self.EXACT_MATCH_MAX_DISTANCE if match_type == 'exact' else self.ADJACENT_MATCH_MAX_DISTANCE
+                print(f"          📏 {match_type.upper()} MATCH: {distance:.1f}mi ≤ {max_distance:.1f}mi ✅")
                 
                 # SUCCESS! Create new assignment with same assignment string, new driver
                 new_assignment = f"{driver}:{callout_dog['full_assignment_string']}"
                 
-                print(f"          ✅ PERFECT MATCH!")
+                if dog_type == 'regular' and match_type == 'exact':
+                    success_indicator = "🎉"
+                    assignment_desc = "PERFECT MATCH! (regular exact)"
+                elif dog_type == 'regular' and match_type == 'adjacent':
+                    success_indicator = "✅"
+                    assignment_desc = "GOOD MATCH (regular adjacent)"
+                elif dog_type == 'parking/field' and match_type == 'exact':
+                    success_indicator = "🔄"
+                    assignment_desc = "BACKUP MATCH (parking/field exact)"
+                else:
+                    success_indicator = "⚠️"
+                    assignment_desc = "LAST RESORT (parking/field adjacent)"
+                
+                print(f"          {success_indicator} {assignment_desc}")
                 print(f"          📝 New assignment: {new_assignment}")
                 print(f"          📋 (Preserved exact string: '{callout_dog['full_assignment_string']}')")
                 
@@ -434,7 +539,9 @@ class DogReassignmentSystem:
                     'driver': driver,
                     'distance': distance,
                     'closest_dog': close_dog['dog_name'],
-                    'reason': f"capacity_available_via_{close_dog['dog_name']}"
+                    'assignment_type': dog_type,
+                    'match_type': match_type,
+                    'reason': f"capacity_available_via_{close_dog['dog_name']}_{dog_type}_{match_type}"
                 })
                 
                 # UPDATE STATE: Add this dog's load to the driver
@@ -447,8 +554,8 @@ class DogReassignmentSystem:
                 
                 print(f"          📊 Updated {driver} load: {current_driver_loads[driver]}")
                 
-                # Add to dogs going today list for future iterations
-                dogs_going_today.append({
+                # Add to regular dogs list for future iterations (becomes a regular assignment)
+                regular_dogs_going_today.append({
                     'dog_id': callout_dog['dog_id'],
                     'dog_name': callout_dog['dog_name'],
                     'driver': driver,
@@ -795,7 +902,11 @@ class DogReassignmentSystem:
         if best_assignments:
             print(f"\n🎉 OPTIMAL ASSIGNMENTS:")
             for assignment in best_assignments:
-                print(f"      ✅ {assignment['dog_name']} → {assignment['new_assignment']}")
+                assignment_type = assignment.get('assignment_type', 'regular')
+                type_indicator = "🎯" if assignment_type == 'regular' else "⚠️"
+                assignment_description = "" if assignment_type == 'regular' else " (via parking/field)"
+                
+                print(f"      {type_indicator} {assignment['dog_name']} → {assignment['new_assignment']}{assignment_description}")
                 print(f"         Distance: {assignment['distance']:.1f}mi via {assignment['closest_dog']}")
         
         return best_assignments
@@ -803,7 +914,7 @@ class DogReassignmentSystem:
     def reassign_dogs_smart_optimization(self):
         """Smart heuristic + local optimization for large numbers of callout dogs"""
         print("\n🔄 Starting SMART OPTIMIZATION ASSIGNMENT...")
-        print("🎯 Using intelligent heuristics for scalability (3 mile limit)")
+        print("🎯 Using intelligent heuristics (exact ≤3mi, adjacent ≤0.6mi, regular dogs priority)")
         
         dogs_to_reassign = self.get_dogs_to_reassign()
         
@@ -902,9 +1013,36 @@ class DogReassignmentSystem:
         # Show the best assignments
         if best_assignments:
             print(f"\n🎉 OPTIMAL ASSIGNMENTS ({best_strategy}):")
-            for assignment in best_assignments:
-                print(f"      ✅ {assignment['dog_name']} → {assignment['new_assignment']}")
-                print(f"         Distance: {assignment['distance']:.1f}mi via {assignment['closest_dog']}")
+            
+            # Categorize assignments by type and match
+            perfect_matches = [a for a in best_assignments if a.get('assignment_type') == 'regular' and a.get('match_type') == 'exact']
+            good_matches = [a for a in best_assignments if a.get('assignment_type') == 'regular' and a.get('match_type') == 'adjacent']
+            backup_exact = [a for a in best_assignments if a.get('assignment_type') == 'parking/field' and a.get('match_type') == 'exact']
+            backup_adjacent = [a for a in best_assignments if a.get('assignment_type') == 'parking/field' and a.get('match_type') == 'adjacent']
+            
+            if perfect_matches:
+                print(f"      🎉 PERFECT (regular exact matches):")
+                for assignment in perfect_matches:
+                    print(f"         ✅ {assignment['dog_name']} → {assignment['new_assignment']}")
+                    print(f"            Distance: {assignment['distance']:.1f}mi via {assignment['closest_dog']}")
+            
+            if good_matches:
+                print(f"      ✅ GOOD (regular adjacent matches ≤0.6mi):")
+                for assignment in good_matches:
+                    print(f"         📍 {assignment['dog_name']} → {assignment['new_assignment']}")
+                    print(f"            Distance: {assignment['distance']:.1f}mi via {assignment['closest_dog']}")
+            
+            if backup_exact:
+                print(f"      🔄 BACKUP (parking/field exact matches):")
+                for assignment in backup_exact:
+                    print(f"         ⚠️ {assignment['dog_name']} → {assignment['new_assignment']}")
+                    print(f"            Distance: {assignment['distance']:.1f}mi via {assignment['closest_dog']}")
+            
+            if backup_adjacent:
+                print(f"      ⚠️ LAST RESORT (parking/field adjacent ≤0.6mi):")
+                for assignment in backup_adjacent:
+                    print(f"         🆘 {assignment['dog_name']} → {assignment['new_assignment']}")
+                    print(f"            Distance: {assignment['distance']:.1f}mi via {assignment['closest_dog']}")
         
         return best_assignments
 
@@ -1025,7 +1163,7 @@ class DogReassignmentSystem:
             if slack_webhook:
                 try:
                     slack_message = {
-                        "text": f"🐕 Dog Reassignment Complete: Updated {updates_count} assignments using 3-mile limit optimization"
+                        "text": f"🐕 Dog Reassignment Complete: Updated {updates_count} assignments using 3-mile limit optimization (regular dogs priority)"
                     }
                     response = requests.post(slack_webhook, json=slack_message, timeout=10)
                     if response.status_code == 200:
@@ -1045,8 +1183,9 @@ class DogReassignmentSystem:
 
 def main():
     """Main function to run the dog reassignment system"""
-    print("🚀 Production Dog Reassignment System - SMART OPTIMIZATION (3 MILE LIMIT)")
-    print("=" * 75)
+    print("🚀 Production Dog Reassignment System - SMART OPTIMIZATION")
+    print("📏 Distance Limits: Exact matches ≤3mi, Adjacent matches ≤0.6mi, Regular dogs priority")
+    print("=" * 95)
     
     # Initialize system
     system = DogReassignmentSystem()
@@ -1084,7 +1223,7 @@ def main():
     if reassignments:
         write_success = system.write_results_to_sheets(reassignments)
         if write_success:
-            print(f"\n🎉 SUCCESS! Processed {len(reassignments)} callout assignments using 3-mile limit smart optimization")
+            print(f"\n🎉 SUCCESS! Processed {len(reassignments)} callout assignments using 3-mile limit with regular dogs priority")
         else:
             print(f"\n❌ Failed to write {len(reassignments)} results to Google Sheets")
     else:
