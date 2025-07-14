@@ -17,8 +17,10 @@ class DogReassignmentSystem:
         self.DISTANCE_MATRIX_URL = "https://docs.google.com/spreadsheets/d/1421xCS86YH6hx0RcuZCyXkyBK_xl-VDSlXyDNvw09Pg/export?format=csv&gid=398422902"
         self.MAP_SHEET_URL = "https://docs.google.com/spreadsheets/d/1mg8d5CLxSR54KhNUL8SpL5jzrGN-bghTsC9vxSK8lR0/export?format=csv&gid=267803750"
         
-        # System parameters
-        self.MAX_DISTANCE = 3.0  # Hard limit: no assignments beyond 3 miles
+        # STRICTER DISTANCE LIMITS
+        self.MAX_DISTANCE = 2.0  # Reduced from 3.0 - stricter limit
+        self.EXACT_MATCH_MAX_DISTANCE = 1.5  # Even stricter for exact group matches
+        self.ADJACENT_MATCH_MAX_DISTANCE = 0.75  # Very strict for adjacent matches
         
         # Data containers
         self.distance_matrix = None
@@ -363,16 +365,18 @@ class DogReassignmentSystem:
 
     def calculate_effective_distance_to_driver(self, callout_dog_id: str, callout_needed_groups: List[int], 
                                              driver_dogs: List[str], driver_groups: List[int]) -> Tuple[float, str]:
-        """Calculate effective distance considering group compatibility"""
+        """Calculate effective distance considering group compatibility - STRICTER VERSION"""
         if not driver_dogs:
-            return float('inf'), "no_dogs"  # Driver has no current dogs
+            return float('inf'), "no_dogs"
         
         # Find minimum physical distance to driver's route
         min_physical_distance = float('inf')
         closest_dog = None
+        all_distances = []  # DEBUG: Track all distances
         
         for driver_dog_id in driver_dogs:
             distance = self.get_distance(callout_dog_id, driver_dog_id)
+            all_distances.append(f"{driver_dog_id}:{distance:.1f}mi")
             if distance < min_physical_distance:
                 min_physical_distance = distance
                 closest_dog = driver_dog_id
@@ -380,11 +384,11 @@ class DogReassignmentSystem:
         if min_physical_distance == float('inf'):
             return float('inf'), "no_distance_data"
         
-        # 🔍 DEBUG: Show which dog was closest for distance calculation
-        if len(driver_dogs) > 1:
-            print(f"      📏 Closest to {callout_dog_id}: {closest_dog} ({min_physical_distance:.1f}mi)")
+        # 🔍 DEBUG: Show ALL distances for this assignment consideration
+        print(f"      📏 Distances from {callout_dog_id}: {', '.join(all_distances)}")
+        print(f"      📏 Closest: {closest_dog} ({min_physical_distance:.1f}mi)")
         
-        # Determine group compatibility
+        # Determine group compatibility with STRICTER distance limits
         callout_groups_set = set(callout_needed_groups)
         driver_groups_set = set(driver_groups)
         
@@ -392,22 +396,30 @@ class DogReassignmentSystem:
         exact_matches = callout_groups_set.intersection(driver_groups_set)
         
         if exact_matches:
-            # Exact group match - use actual distance
-            return min_physical_distance, f"exact_match_{list(exact_matches)}"
+            # Exact group match - use actual distance but with strict limit
+            if min_physical_distance <= self.EXACT_MATCH_MAX_DISTANCE:
+                print(f"      ✅ EXACT MATCH accepted: {min_physical_distance:.1f}mi ≤ {self.EXACT_MATCH_MAX_DISTANCE}mi")
+                return min_physical_distance, f"exact_match_{list(exact_matches)}"
+            else:
+                print(f"      ❌ EXACT MATCH rejected: {min_physical_distance:.1f}mi > {self.EXACT_MATCH_MAX_DISTANCE}mi")
+                return float('inf'), f"exact_match_too_far_{min_physical_distance:.1f}mi"
         
-        # Check for adjacent group matches
-        # Groups 1, 2, 3 are all adjacent to each other
+        # Check for adjacent group matches with even stricter limits
         adjacent_matches = []
         for callout_group in callout_needed_groups:
             for driver_group in driver_groups:
-                # All groups are adjacent: 1↔2, 2↔3, 1↔3
                 if abs(callout_group - driver_group) <= 2 and callout_group != driver_group:
                     adjacent_matches.append((callout_group, driver_group))
         
         if adjacent_matches:
-            # Adjacent group match - double the distance
+            # Adjacent group match - double the distance and apply strict limit
             effective_distance = min_physical_distance * 2.0
-            return effective_distance, f"adjacent_match_{adjacent_matches[0]}"
+            if effective_distance <= self.ADJACENT_MATCH_MAX_DISTANCE:
+                print(f"      ✅ ADJACENT MATCH accepted: {effective_distance:.1f}mi ≤ {self.ADJACENT_MATCH_MAX_DISTANCE}mi")
+                return effective_distance, f"adjacent_match_{adjacent_matches[0]}"
+            else:
+                print(f"      ❌ ADJACENT MATCH rejected: {effective_distance:.1f}mi > {self.ADJACENT_MATCH_MAX_DISTANCE}mi")
+                return float('inf'), f"adjacent_match_too_far_{effective_distance:.1f}mi"
         
         # No group compatibility
         return float('inf'), "no_group_compatibility"
@@ -483,10 +495,9 @@ class DogReassignmentSystem:
         return total_miles
 
     def strategy_individual_assignment(self, dogs_to_reassign: List[Dict], working_drivers: Dict) -> Tuple[List[Dict], float]:
-        """Strategy A: Individual assignment (current approach)"""
-        print(f"\n🔹 STRATEGY A: Individual Assignment")
+        """Strategy A: Individual assignment - DISTANCE PRIORITY VERSION"""
+        print(f"\n🔹 STRATEGY A: Distance-Priority Individual Assignment")
         
-        # Use our existing individual assignment logic
         assignments = []
         drivers_copy = {k: {
             'capacity': v['capacity'].copy(),
@@ -496,11 +507,17 @@ class DogReassignmentSystem:
         } for k, v in working_drivers.items()}
         
         for dog in dogs_to_reassign:
+            print(f"\n🐕 Processing {dog['dog_name']} ({dog['dog_id']}) - Groups: {dog['needed_groups']}")
+            
             best_driver = None
-            best_score = float('-inf')
+            best_distance = float('inf')
+            best_compatibility = ""
+            candidates = []
             
             for driver_name, driver_info in drivers_copy.items():
-                # Check capacity
+                print(f"\n   🚗 Checking driver: {driver_name}")
+                
+                # Check capacity first
                 can_handle = True
                 for group in dog['needed_groups']:
                     group_key = f'group{group}'
@@ -508,31 +525,39 @@ class DogReassignmentSystem:
                     capacity = driver_info['capacity'].get(group_key, 0)
                     
                     if current + dog['num_dogs'] > capacity:
+                        print(f"      ❌ Capacity exceeded for group {group}: {current + dog['num_dogs']} > {capacity}")
                         can_handle = False
                         break
                 
                 if not can_handle:
                     continue
                 
-                # Calculate distance
+                # Calculate distance with detailed logging
                 effective_distance, compatibility = self.calculate_effective_distance_to_driver(
                     dog['dog_id'], dog['needed_groups'], 
                     driver_info['current_dogs'], driver_info['current_groups']
                 )
                 
-                if effective_distance > self.MAX_DISTANCE:
+                print(f"      📊 Result: {effective_distance:.1f}mi ({compatibility})")
+                
+                if effective_distance == float('inf'):
                     continue
                 
-                # Score
-                score = 100.0 - (effective_distance * 20)
-                if "exact_match" in compatibility:
-                    score += 15
-                elif "adjacent_match" in compatibility:
-                    score += 5
+                candidates.append({
+                    'driver': driver_name,
+                    'distance': effective_distance,
+                    'compatibility': compatibility
+                })
                 
-                if score > best_score:
+                # DISTANCE FIRST: Pick the closest driver
+                if effective_distance < best_distance:
                     best_driver = driver_name
-                    best_score = score
+                    best_distance = effective_distance
+                    best_compatibility = compatibility
+            
+            print(f"\n   📋 All candidates for {dog['dog_name']}:")
+            for candidate in sorted(candidates, key=lambda x: x['distance']):
+                print(f"      - {candidate['driver']}: {candidate['distance']:.1f}mi ({candidate['compatibility']})")
             
             if best_driver:
                 # Update driver state
@@ -552,11 +577,15 @@ class DogReassignmentSystem:
                     'dog_name': dog['dog_name'],
                     'new_assignment': f"{best_driver}:{groups_text}",
                     'driver': best_driver,
-                    'strategy': 'individual'
+                    'strategy': 'distance_priority'
                 })
+                
+                print(f"   ✅ ASSIGNED: {dog['dog_name']} → {best_driver} ({best_distance:.1f}mi, {best_compatibility})")
+            else:
+                print(f"   ❌ NO VALID ASSIGNMENT for {dog['dog_name']}")
         
         total_miles = self.calculate_total_system_miles(assignments)
-        print(f"      ✅ Individual Assignment: {len(assignments)} dogs assigned, {total_miles:.1f} total miles")
+        print(f"      ✅ Distance-Priority Assignment: {len(assignments)} dogs assigned, {total_miles:.1f} total miles")
         
         return assignments, total_miles
 
@@ -859,7 +888,7 @@ class DogReassignmentSystem:
         # Strategy A: Individual assignment (distance-first)
         try:
             assignments_a, miles_a = self.strategy_individual_assignment(dogs_to_reassign, working_drivers)
-            strategies.append(('Individual Assignment', assignments_a, miles_a))
+            strategies.append(('Distance-Priority Assignment', assignments_a, miles_a))
         except Exception as e:
             print(f"      ❌ Strategy A failed: {e}")
         
