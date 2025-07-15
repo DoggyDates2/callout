@@ -1,5 +1,5 @@
 # production_reassignment.py
-# COMPLETE WORKING VERSION: Locality-first assignment with cascading moves
+# COMPLETE WORKING VERSION: Locality-first assignment with cascading moves + DEBUG
 
 import pandas as pd
 import numpy as np
@@ -114,10 +114,11 @@ class DogReassignmentSystem:
             df = pd.read_csv(StringIO(response.text))
             
             print(f"📊 Map sheet shape: ({len(df)}, {len(df.columns)})")
+            print(f"🔍 DEBUG: First few column names: {list(df.columns[:15])}")
             
             assignments = []
             
-            for _, row in df.iterrows():
+            for i, row in df.iterrows():
                 try:
                     # Column positions (0-indexed)
                     dog_name = row.iloc[1] if len(row) > 1 else ""  # Column B
@@ -126,6 +127,10 @@ class DogReassignmentSystem:
                     dog_id = row.iloc[9] if len(row) > 9 else ""    # Column J
                     callout = row.iloc[10] if len(row) > 10 else "" # Column K
                     num_dogs = row.iloc[5] if len(row) > 5 else 1   # Column F (Number of dogs)
+                    
+                    # Debug first few rows
+                    if i < 10:
+                        print(f"🔍 Row {i}: DogName='{dog_name}', Combined='{combined}', DogID='{dog_id}', Callout='{callout}'")
                     
                     # Skip rows without dog IDs
                     if not dog_id or pd.isna(dog_id):
@@ -148,7 +153,7 @@ class DogReassignmentSystem:
                     })
                     
                 except Exception as e:
-                    print(f"⚠️ Error processing row: {e}")
+                    print(f"⚠️ Error processing row {i}: {e}")
                     continue
             
             self.dog_assignments = assignments
@@ -221,21 +226,38 @@ class DogReassignmentSystem:
         if not self.dog_assignments:
             return dogs_to_reassign
         
-        for assignment in self.dog_assignments:
+        print(f"🔍 DEBUG: Checking {len(self.dog_assignments)} total assignments for callouts...")
+        
+        callout_candidates = 0
+        filtered_out = 0
+        no_colon = 0
+        no_groups = 0
+        
+        for i, assignment in enumerate(self.dog_assignments):
+            # Debug first few and last few
+            if i < 5 or i >= len(self.dog_assignments) - 5:
+                print(f"   Row {i}: ID={assignment.get('dog_id', 'MISSING')}, Combined='{assignment.get('combined', 'MISSING')}', Callout='{assignment.get('callout', 'MISSING')}'")
+            
             # Check for callout: Combined column blank AND Callout column has content
-            if (not assignment['combined'] or assignment['combined'].strip() == "") and \
-               (assignment['callout'] and assignment['callout'].strip() != ""):
+            combined_blank = (not assignment['combined'] or assignment['combined'].strip() == "")
+            callout_has_content = (assignment['callout'] and assignment['callout'].strip() != "")
+            
+            if combined_blank and callout_has_content:
+                callout_candidates += 1
                 
                 # FILTER OUT NON-DOGS: Skip Parking, Field, and other administrative entries
-                dog_name = str(assignment['dog_name']).lower().strip()
+                dog_name = str(assignment.get('dog_name', '')).lower().strip()
                 if any(keyword in dog_name for keyword in ['parking', 'field', 'admin', 'office']):
                     print(f"   ⏭️ Skipping non-dog entry: {assignment['dog_name']} ({assignment['dog_id']})")
+                    filtered_out += 1
                     continue
                 
                 # Extract the FULL assignment string (everything after the colon)
                 callout_text = assignment['callout'].strip()
                 
                 if ':' not in callout_text:
+                    print(f"   ⚠️ No colon in callout for {assignment.get('dog_id', 'UNKNOWN')}: '{callout_text}'")
+                    no_colon += 1
                     continue
                 
                 original_driver = callout_text.split(':', 1)[0].strip()
@@ -254,8 +276,19 @@ class DogReassignmentSystem:
                         'original_callout': assignment['callout'],
                         'original_driver': original_driver
                     })
+                else:
+                    print(f"   ⚠️ No groups found for {assignment.get('dog_id', 'UNKNOWN')}: '{full_assignment_string}'")
+                    no_groups += 1
         
-        print(f"🚨 Found {len(dogs_to_reassign)} REAL dogs that need drivers assigned:")
+        print(f"🔍 DEBUG SUMMARY:")
+        print(f"   📊 Total assignments checked: {len(self.dog_assignments)}")
+        print(f"   🎯 Callout candidates (blank combined + has callout): {callout_candidates}")
+        print(f"   🚫 Filtered out (non-dogs): {filtered_out}")
+        print(f"   ⚠️ No colon in callout: {no_colon}")
+        print(f"   ⚠️ No groups extracted: {no_groups}")
+        print(f"   ✅ Final dogs to reassign: {len(dogs_to_reassign)}")
+        
+        print(f"\n🚨 Found {len(dogs_to_reassign)} REAL dogs that need drivers assigned:")
         for dog in dogs_to_reassign:
             print(f"   - {dog['dog_name']} ({dog['dog_id']}) - {dog['num_dogs']} dogs")
             print(f"     Original: {dog['original_callout']}")  
@@ -704,7 +737,14 @@ class DogReassignmentSystem:
                     # Direct assignment possible
                     driver = best_assignment['driver']
                     distance = best_assignment['distance']
-                    quality = 'GOOD' if distance <= self.PREFERRED_DISTANCE else 'BACKUP'
+                    
+                    # Determine quality with 3-way check
+                    if distance <= self.PREFERRED_DISTANCE:
+                        quality = 'GOOD'
+                    elif distance <= self.MAX_DISTANCE:
+                        quality = 'BACKUP'
+                    else:
+                        quality = 'EMERGENCY'
                     
                     assignment_record = {
                         'dog_id': callout_dog['dog_id'],
@@ -791,7 +831,14 @@ class DogReassignmentSystem:
                             # Assign the callout dog
                             driver = best_blocked['driver']
                             distance = best_blocked['distance']
-                            quality = 'GOOD' if distance <= self.PREFERRED_DISTANCE else 'BACKUP'
+                            
+                            # Determine quality with 3-way check
+                            if distance <= self.PREFERRED_DISTANCE:
+                                quality = 'GOOD'
+                            elif distance <= self.MAX_DISTANCE:
+                                quality = 'BACKUP'
+                            else:
+                                quality = 'EMERGENCY'
                             
                             assignment_record = {
                                 'dog_id': callout_dog['dog_id'],
@@ -1647,7 +1694,7 @@ class DogReassignmentSystem:
         except Exception as e:
             print(f"❌ Error writing to sheets: {e}")
             import traceback
-            print(f"🔍 Full error: {traceback.format_exc}")
+            print(f"🔍 Full error: {traceback.format_exc()}")
             return False
 
 def main():
