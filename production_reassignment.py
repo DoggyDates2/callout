@@ -1,5 +1,5 @@
 # production_reassignment.py
-# COMPLETE WORKING VERSION: Locality-first assignment with scaling adjacent group thresholds
+# COMPLETE WORKING VERSION: Locality-first assignment with full debugging
 
 import pandas as pd
 import numpy as np
@@ -28,7 +28,7 @@ class DogReassignmentSystem:
         self.ABSOLUTE_MAX_DISTANCE = 0.7  # Search limit for locality-first algorithm
         self.CASCADING_MOVE_MAX = 0.5  # Max distance for cascading swaps
         self.ADJACENT_GROUP_DISTANCE = 0.1  # Base adjacent group distance (scales with radius)
-        self.EXCLUSION_DISTANCE = 100.0  # Recognize 100+ as "do not assign" placeholders
+        self.EXCLUSION_DISTANCE = 200.0  # Temporarily increased from 100.0 to see if 100 is placeholder
         
         # Legacy thresholds for compatibility
         self.GREEDY_WALK_MAX_DISTANCE = 0.5
@@ -457,17 +457,35 @@ class DogReassignmentSystem:
 
     def attempt_cascading_move(self, blocked_driver, callout_dog, current_assignments, max_cascade_distance):
         """Attempt to free space in blocked_driver by moving one of their dogs"""
+        print(f"🔄 ATTEMPTING CASCADING MOVE for {callout_dog['dog_name']} → {blocked_driver}")
+        print(f"   Need to free space in {blocked_driver} for groups {callout_dog['needed_groups']}")
+        
         driver_dogs = self.get_current_driver_dogs(blocked_driver, current_assignments)
+        print(f"   {blocked_driver} currently has {len(driver_dogs)} dogs assigned")
+        
+        # Show current load for this driver
+        current_load = self.calculate_driver_load(blocked_driver, current_assignments)
+        driver_capacity = self.driver_capacities.get(blocked_driver, {})
+        print(f"   {blocked_driver} capacity: {driver_capacity}")
+        print(f"   {blocked_driver} current load: {current_load}")
         
         # Try to move each dog, starting with single-group dogs (easier to place)
         move_candidates = sorted(driver_dogs, key=lambda x: (len(x.get('needed_groups', [])), x.get('num_dogs', 1)))
+        print(f"   Trying to move {len(move_candidates)} dogs (easiest first):")
         
-        for dog_to_move in move_candidates:
+        for i, dog_to_move in enumerate(move_candidates):
+            print(f"     {i+1}. {dog_to_move['dog_name']} ({dog_to_move['dog_id']}) - groups {dog_to_move['needed_groups']}, {dog_to_move['num_dogs']} dogs")
+            
             # Find targets for this dog within cascade distance
             targets = self.find_move_targets_for_dog(dog_to_move, current_assignments, max_cascade_distance)
+            print(f"        Found {len(targets)} potential targets within {max_cascade_distance}mi:")
+            
+            for j, target in enumerate(targets[:3]):  # Show top 3 targets
+                print(f"          {j+1}. {target['driver']} - {target['distance']:.3f}mi via {target['via_dog']}")
             
             if targets:
                 best_target = targets[0]
+                print(f"        ✅ EXECUTING MOVE: {dog_to_move['dog_name']} from {blocked_driver} → {best_target['driver']}")
                 
                 # Execute the move
                 for assignment in current_assignments:
@@ -482,7 +500,10 @@ class DogReassignmentSystem:
                     'distance': best_target['distance'],
                     'via_dog': best_target['via_dog']
                 }
+            else:
+                print(f"        ❌ No targets found for {dog_to_move['dog_name']}")
         
+        print(f"   ❌ CASCADING MOVE FAILED - no dogs could be relocated")
         return None
 
     def locality_first_assignment(self):
@@ -523,6 +544,73 @@ class DogReassignmentSystem:
         
         print(f"🐕 Processing {len(dogs_remaining)} callout dogs")
         
+        # DEBUG: Check distance matrix compatibility with callout dogs
+        print(f"\n🔍 DIAGNOSTIC: Distance matrix compatibility check...")
+        print(f"   📊 Distance matrix has {len(self.distance_matrix)} dog IDs")
+        print(f"   📋 First 10 matrix IDs: {list(self.distance_matrix.index[:10])}")
+        print(f"   🎯 Callout dog IDs: {[dog['dog_id'] for dog in dogs_remaining[:5]]}")
+        
+        # Check if callout dog IDs exist in distance matrix
+        missing_ids = []
+        for dog in dogs_remaining[:5]:
+            if dog['dog_id'] not in self.distance_matrix.index:
+                missing_ids.append(dog['dog_id'])
+        
+        if missing_ids:
+            print(f"   🚨 MISSING FROM MATRIX: {missing_ids}")
+        else:
+            print(f"   ✅ All callout dog IDs found in distance matrix")
+            
+            # Test a few actual distance lookups
+            print(f"   🔍 Sample distance checks:")
+            for i, dog in enumerate(dogs_remaining[:2]):
+                print(f"     Testing callout dog: {dog['dog_name']} ({dog['dog_id']})")
+                for j, assignment in enumerate(current_assignments[:3]):
+                    try:
+                        # Raw matrix lookup
+                        raw_value = self.distance_matrix.loc[dog['dog_id'], assignment['dog_id']]
+                        print(f"       Raw matrix[{dog['dog_id']}, {assignment['dog_id']}] = {raw_value} (type: {type(raw_value)})")
+                        
+                        # Through our function
+                        distance = self.get_distance(dog['dog_id'], assignment['dog_id'])
+                        print(f"       get_distance() = {distance:.3f}mi")
+                        
+                        # Check if value is NaN or special
+                        if pd.isna(raw_value):
+                            print(f"       ⚠️ Raw value is NaN!")
+                        elif raw_value == 100.0:
+                            print(f"       🚨 Raw value is exactly 100.0 - likely placeholder!")
+                        
+                    except Exception as e:
+                        print(f"       ❌ Error: {e}")
+                    
+                    if j == 1:  # Just show 2 samples per dog
+                        break
+                if i == 0:  # Just show 1 dog for detailed analysis
+                    break
+            
+            # Show a sample of the distance matrix around our callout dogs
+            print(f"   🔍 Distance matrix sample around callout dogs:")
+            callout_ids = [dog['dog_id'] for dog in dogs_remaining[:3]]
+            current_ids = [assignment['dog_id'] for assignment in current_assignments[:3]]
+            
+            try:
+                sample_matrix = self.distance_matrix.loc[callout_ids[:2], current_ids[:2]]
+                print(f"     Sample matrix shape: {sample_matrix.shape}")
+                print(f"     Sample values:")
+                print(sample_matrix)
+                
+                # Check for patterns in the matrix
+                print(f"   🔍 Matrix analysis:")
+                all_values = self.distance_matrix.values.flatten()
+                unique_values = pd.Series(all_values).value_counts().head(10)
+                print(f"     Top 10 most common values in distance matrix:")
+                for value, count in unique_values.items():
+                    print(f"       {value}: {count} occurrences")
+                    
+            except Exception as e:
+                print(f"     ❌ Error analyzing matrix: {e}")
+        
         # DIAGNOSTIC: Check driver capacity availability
         print(f"\n🔍 DIAGNOSTIC: Driver capacity analysis...")
         total_capacity = {'group1': 0, 'group2': 0, 'group3': 0}
@@ -542,26 +630,55 @@ class DogReassignmentSystem:
         # DIAGNOSTIC: Check distances for first few dogs
         print(f"\n🔍 DIAGNOSTIC: Distance check for first 3 dogs...")
         print(f"   📏 Thresholds: Perfect match ≤0.2mi, Adjacent groups scale with radius (50% of radius)")
+        
+        # Group current assignments by driver to see all options
+        drivers_dogs = {}
+        for assignment in current_assignments:
+            driver = assignment['driver']
+            if driver not in drivers_dogs:
+                drivers_dogs[driver] = []
+            drivers_dogs[driver].append(assignment)
+        
+        print(f"   📊 Found {len(drivers_dogs)} drivers with assigned dogs:")
+        for driver, dogs in list(drivers_dogs.items())[:5]:  # Show first 5 drivers
+            print(f"     {driver}: {len(dogs)} dogs (groups: {[d['needed_groups'] for d in dogs[:3]]})")
+        
         for i, callout_dog in enumerate(dogs_remaining[:3]):
             print(f"   {callout_dog['dog_name']} ({callout_dog['dog_id']}) needs groups {callout_dog['needed_groups']}:")
             
-            # Check distances to first 5 current assignments
-            distances = []
-            for j, assignment in enumerate(current_assignments[:10]):
-                distance = self.get_distance(callout_dog['dog_id'], assignment['dog_id'])
-                if distance < float('inf'):
-                    distances.append({
-                        'driver': assignment['driver'],
-                        'distance': distance,
-                        'groups': assignment['needed_groups']
-                    })
+            # Check distances to ALL drivers, not just first few assignments
+            driver_distances = {}
+            for driver, dogs in drivers_dogs.items():
+                closest_distance = float('inf')
+                closest_dog = None
+                
+                for dog_assignment in dogs:
+                    distance = self.get_distance(callout_dog['dog_id'], dog_assignment['dog_id'])
+                    if distance < closest_distance:
+                        closest_distance = distance
+                        closest_dog = dog_assignment
+                
+                if closest_dog:
+                    driver_distances[driver] = {
+                        'distance': closest_distance,
+                        'via_dog': closest_dog['dog_name'],
+                        'via_dog_id': closest_dog['dog_id'],
+                        'groups': closest_dog['needed_groups']
+                    }
             
-            # Sort by distance and show closest 3
-            distances.sort(key=lambda x: x['distance'])
-            print(f"     Closest drivers:")
-            for k, dist_info in enumerate(distances[:3]):
-                group_compat = self.check_group_compatibility(callout_dog['needed_groups'], dist_info['groups'], dist_info['distance'], 0.7)  # Test at max radius
-                print(f"       {k+1}. {dist_info['driver']} - {dist_info['distance']:.3f}mi (groups: {dist_info['groups']}, compatible: {group_compat})")
+            # Sort drivers by distance and show closest 5
+            sorted_drivers = sorted(driver_distances.items(), key=lambda x: x[1]['distance'])
+            print(f"     Closest drivers by distance:")
+            for j, (driver, info) in enumerate(sorted_drivers[:5]):
+                group_compat = self.check_group_compatibility(callout_dog['needed_groups'], info['groups'], info['distance'], 0.7)
+                print(f"       {j+1}. {driver} - {info['distance']:.3f}mi via {info['via_dog']} (groups: {info['groups']}, compatible: {group_compat})")
+                
+                # Special highlight for Leen since user mentioned Ozzy/Wyatt
+                if driver == 'Leen':
+                    print(f"          🎯 LEEN FOUND! Distance to {info['via_dog']} ({info['via_dog_id']})")
+            
+            if i == 0:  # Just show detailed analysis for first dog (Fawkes)
+                break
         
         print(f"\n📍 STEP 1: Direct assignments at ≤{self.PREFERRED_DISTANCE}mi")
         
