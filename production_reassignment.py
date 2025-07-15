@@ -1,5 +1,5 @@
 # production_reassignment.py
-# COMPLETE WORKING VERSION: Locality-first assignment with cascading moves + DEBUG
+# COMPLETE WORKING VERSION: Locality-first assignment with scaling adjacent group thresholds
 
 import pandas as pd
 import numpy as np
@@ -27,7 +27,7 @@ class DogReassignmentSystem:
         self.MAX_DISTANCE = 0.5  # Backup assignments: reasonable with moves
         self.ABSOLUTE_MAX_DISTANCE = 0.7  # Search limit for locality-first algorithm
         self.CASCADING_MOVE_MAX = 0.5  # Max distance for cascading swaps
-        self.ADJACENT_GROUP_DISTANCE = 0.1  # Adjacent groups need to be twice as close
+        self.ADJACENT_GROUP_DISTANCE = 0.1  # Base adjacent group distance (scales with radius)
         self.EXCLUSION_DISTANCE = 100.0  # Recognize 100+ as "do not assign" placeholders
         
         # Legacy thresholds for compatibility
@@ -374,7 +374,7 @@ class DogReassignmentSystem:
         
         return load
 
-    def check_group_compatibility(self, callout_groups, driver_groups, distance):
+    def check_group_compatibility(self, callout_groups, driver_groups, distance, current_radius=None):
         """Check if groups are compatible considering adjacent group penalty"""
         # Extract unique group numbers from both sets
         callout_set = set(callout_groups)
@@ -382,14 +382,21 @@ class DogReassignmentSystem:
         
         # Perfect match - same groups
         if callout_set.intersection(driver_set):
-            return distance <= self.PREFERRED_DISTANCE
+            # Use current radius if provided, otherwise use default preferred distance
+            max_distance = current_radius if current_radius else self.PREFERRED_DISTANCE
+            return distance <= max_distance
         
-        # Adjacent groups - need to be twice as close
+        # Adjacent groups - need to be proportionally closer (50% of current radius)
         adjacent_pairs = [(1, 2), (2, 3), (2, 1), (3, 2)]
         for callout_group in callout_set:
             for driver_group in driver_set:
                 if (callout_group, driver_group) in adjacent_pairs:
-                    return distance <= self.ADJACENT_GROUP_DISTANCE
+                    # Scale adjacent group threshold with current search radius
+                    if current_radius:
+                        adjacent_threshold = current_radius * 0.5  # 50% of current radius
+                    else:
+                        adjacent_threshold = self.ADJACENT_GROUP_DISTANCE
+                    return distance <= adjacent_threshold
         
         # No compatibility
         return False
@@ -417,7 +424,7 @@ class DogReassignmentSystem:
             dog_groups = dog_to_move.get('needed_groups', [])
             target_groups = assignment.get('needed_groups', [])
             
-            if not self.check_group_compatibility(dog_groups, target_groups, distance):
+            if not self.check_group_compatibility(dog_groups, target_groups, distance, max_distance):
                 continue
             
             if distance > max_distance:
@@ -483,7 +490,7 @@ class DogReassignmentSystem:
         print("\n🎯 LOCALITY-FIRST ASSIGNMENT ALGORITHM")
         print("🔄 Step-by-step proximity optimization with dynamic state updates")
         print("📏 Starting at 0.2mi, expanding to 0.7mi in 0.1mi increments")
-        print("🔄 Adjacent groups require 0.1mi proximity (2x closer)")
+        print("🔄 Adjacent groups scale with radius (50% of current radius)")
         print("🚶 Cascading moves up to 0.5mi to free space")
         print("=" * 80)
         
@@ -516,7 +523,46 @@ class DogReassignmentSystem:
         
         print(f"🐕 Processing {len(dogs_remaining)} callout dogs")
         
-        # Step 1: Direct assignments at 0.2 miles
+        # DIAGNOSTIC: Check driver capacity availability
+        print(f"\n🔍 DIAGNOSTIC: Driver capacity analysis...")
+        total_capacity = {'group1': 0, 'group2': 0, 'group3': 0}
+        total_used = {'group1': 0, 'group2': 0, 'group3': 0}
+        
+        for driver, capacity in self.driver_capacities.items():
+            current_load = self.calculate_driver_load(driver, current_assignments)
+            for group_key in ['group1', 'group2', 'group3']:
+                total_capacity[group_key] += capacity.get(group_key, 0)
+                total_used[group_key] += current_load.get(group_key, 0)
+        
+        print(f"   📊 Total capacity vs used:")
+        for group_key in ['group1', 'group2', 'group3']:
+            available = total_capacity[group_key] - total_used[group_key]
+            print(f"   {group_key}: {available}/{total_capacity[group_key]} available ({total_used[group_key]} used)")
+        
+        # DIAGNOSTIC: Check distances for first few dogs
+        print(f"\n🔍 DIAGNOSTIC: Distance check for first 3 dogs...")
+        print(f"   📏 Thresholds: Perfect match ≤0.2mi, Adjacent groups scale with radius (50% of radius)")
+        for i, callout_dog in enumerate(dogs_remaining[:3]):
+            print(f"   {callout_dog['dog_name']} ({callout_dog['dog_id']}) needs groups {callout_dog['needed_groups']}:")
+            
+            # Check distances to first 5 current assignments
+            distances = []
+            for j, assignment in enumerate(current_assignments[:10]):
+                distance = self.get_distance(callout_dog['dog_id'], assignment['dog_id'])
+                if distance < float('inf'):
+                    distances.append({
+                        'driver': assignment['driver'],
+                        'distance': distance,
+                        'groups': assignment['needed_groups']
+                    })
+            
+            # Sort by distance and show closest 3
+            distances.sort(key=lambda x: x['distance'])
+            print(f"     Closest drivers:")
+            for k, dist_info in enumerate(distances[:3]):
+                group_compat = self.check_group_compatibility(callout_dog['needed_groups'], dist_info['groups'], dist_info['distance'], 0.7)  # Test at max radius
+                print(f"       {k+1}. {dist_info['driver']} - {dist_info['distance']:.3f}mi (groups: {dist_info['groups']}, compatible: {group_compat})")
+        
         print(f"\n📍 STEP 1: Direct assignments at ≤{self.PREFERRED_DISTANCE}mi")
         
         dogs_assigned_step1 = []
@@ -530,7 +576,7 @@ class DogReassignmentSystem:
                 distance = self.get_distance(callout_dog['dog_id'], assignment['dog_id'])
                 
                 # Check group compatibility with distance requirements
-                if not self.check_group_compatibility(callout_dog['needed_groups'], assignment['needed_groups'], distance):
+                if not self.check_group_compatibility(callout_dog['needed_groups'], assignment['needed_groups'], distance, self.PREFERRED_DISTANCE):
                     continue
                 
                 # Check capacity
@@ -604,7 +650,7 @@ class DogReassignmentSystem:
                     distance = self.get_distance(callout_dog['dog_id'], assignment['dog_id'])
                     
                     # Check group compatibility
-                    if not self.check_group_compatibility(callout_dog['needed_groups'], assignment['needed_groups'], distance):
+                    if not self.check_group_compatibility(callout_dog['needed_groups'], assignment['needed_groups'], distance, self.PREFERRED_DISTANCE):
                         continue
                     
                     # Check if blocked by capacity
@@ -692,6 +738,7 @@ class DogReassignmentSystem:
         
         while current_radius <= self.ABSOLUTE_MAX_DISTANCE and dogs_remaining:
             print(f"\n📏 STEP {step_number}: Radius expansion to ≤{current_radius}mi")
+            print(f"   🎯 Thresholds: Perfect match ≤{current_radius}mi, Adjacent groups ≤{current_radius*0.5:.1f}mi")
             
             dogs_assigned_this_radius = []
             
@@ -708,7 +755,7 @@ class DogReassignmentSystem:
                         continue
                     
                     # Check group compatibility
-                    if not self.check_group_compatibility(callout_dog['needed_groups'], assignment['needed_groups'], distance):
+                    if not self.check_group_compatibility(callout_dog['needed_groups'], assignment['needed_groups'], distance, current_radius):
                         continue
                     
                     # Check capacity
@@ -782,7 +829,7 @@ class DogReassignmentSystem:
                             continue
                         
                         # Check group compatibility
-                        if not self.check_group_compatibility(callout_dog['needed_groups'], assignment['needed_groups'], distance):
+                        if not self.check_group_compatibility(callout_dog['needed_groups'], assignment['needed_groups'], distance, current_radius):
                             continue
                         
                         # Check if blocked by capacity
@@ -1675,13 +1722,13 @@ class DogReassignmentSystem:
                 success_msg += f" (including {len(self.greedy_moves_made)} cascading moves)"
             
             print(success_msg)
-            print(f"🎯 Used locality-first algorithm with cascading moves")
+            print(f"🎯 Used locality-first algorithm with scaling adjacent group thresholds")
             
             # Send Slack notification
             slack_webhook = os.environ.get('SLACK_WEBHOOK_URL')
             if slack_webhook:
                 try:
-                    message = f"🐕 Dog Reassignment Complete: {updates_count} assignments updated using locality-first + cascading moves"
+                    message = f"🐕 Dog Reassignment Complete: {updates_count} assignments updated using locality-first + scaling thresholds"
                     slack_message = {"text": message}
                     response = requests.post(slack_webhook, json=slack_message, timeout=10)
                     if response.status_code == 200:
@@ -1702,7 +1749,7 @@ def main():
     print("🚀 Enhanced Dog Reassignment System - LOCALITY-FIRST OPTIMIZATION")
     print("🎯 NEW: Proximity-first assignment with dynamic cascading moves")
     print("📏 Starts at 0.2mi, expands to 0.7mi in 0.1mi increments")
-    print("🔄 Adjacent groups require 0.1mi (2x closer), multi-group dogs stay together")
+    print("🔄 Adjacent groups scale with radius (50% of current radius)")
     print("🚶 Cascading moves up to 0.5mi to free space dynamically")
     print("🧅 Onion-layer backflow pushes outer assignments out to create inner space")
     print("📊 Quality: GOOD ≤0.2mi, BACKUP ≤0.5mi, EMERGENCY >0.5mi")
@@ -1745,7 +1792,7 @@ def main():
         write_success = system.write_results_to_sheets(reassignments)
         if write_success:
             print(f"\n🎉 SUCCESS! Processed {len(reassignments)} callout assignments")
-            print(f"✅ Used locality-first algorithm with cascading moves")
+            print(f"✅ Used locality-first algorithm with scaling adjacent group thresholds")
         else:
             print(f"\n❌ Failed to write {len(reassignments)} results to Google Sheets")
     else:
