@@ -1,5 +1,5 @@
 # production_reassignment.py
-# COMPLETE WORKING VERSION: Locality-first assignment with full debugging
+# COMPLETE WORKING VERSION: Locality-first assignment with TODAY-ONLY optimization
 
 import pandas as pd
 import numpy as np
@@ -466,8 +466,8 @@ class DogReassignmentSystem:
         # Show current load for this driver
         current_load = self.calculate_driver_load(blocked_driver, current_assignments)
         driver_capacity = self.driver_capacities.get(blocked_driver, {})
-        print(f"   {blocked_driver} capacity: {driver_capacity}")
-        print(f"   {blocked_driver} current load: {current_load}")
+        print(f"   {blocked_driver} capacity: ***{driver_capacity}***")
+        print(f"   {blocked_driver} current load: ***{current_load}***")
         
         # Try to move each dog, starting with single-group dogs (easier to place)
         move_candidates = sorted(driver_dogs, key=lambda x: (len(x.get('needed_groups', [])), x.get('num_dogs', 1)))
@@ -1077,413 +1077,6 @@ class DogReassignmentSystem:
         
         return assignments_made
 
-    def analyze_dog_constraints(self, dogs_to_reassign, current_assignments):
-        """NEW: Analyze how many viable driver options each dog has - with quality tiers"""
-        print(f"\n🔍 ANALYZING ASSIGNMENT CONSTRAINTS for {len(dogs_to_reassign)} dogs...")
-        print(f"🎯 QUALITY THRESHOLDS: ≤{self.PREFERRED_DISTANCE}mi = GOOD, ≤{self.MAX_DISTANCE}mi = BACKUP")
-        
-        dog_options = []
-        
-        for dog in dogs_to_reassign:
-            good_options = []  # ≤0.5 miles
-            backup_options = []  # 0.5-1.0 miles
-            
-            # Find all drivers with capacity and within range
-            for assignment in current_assignments:
-                driver = assignment['driver']
-                
-                # Calculate distance to this dog
-                distance = self.get_distance(dog['dog_id'], assignment['dog_id'])
-                
-                # Skip if too far or invalid
-                if distance > self.ABSOLUTE_MAX_DISTANCE or distance >= self.EXCLUSION_DISTANCE:
-                    continue
-                
-                # Check if this driver has capacity in ALL needed groups
-                current_load = self.calculate_driver_load(driver, current_assignments)
-                has_capacity = True
-                
-                for group in dog['needed_groups']:
-                    group_key = f'group{group}'
-                    current = current_load.get(group_key, 0)
-                    max_cap = self.driver_capacities.get(driver, {}).get(group_key, 0)
-                    needed = dog['num_dogs']
-                    
-                    if current + needed > max_cap:
-                        has_capacity = False
-                        break
-                
-                if has_capacity:
-                    option = {
-                        'driver': driver,
-                        'distance': distance,
-                        'via_dog': assignment['dog_name']
-                    }
-                    
-                    if distance <= self.PREFERRED_DISTANCE:
-                        good_options.append(option)
-                    elif distance <= self.MAX_DISTANCE:
-                        backup_options.append(option)
-            
-            # Remove duplicates within each tier - keep closest
-            def dedupe_options(options_list):
-                driver_best = {}
-                for candidate in options_list:
-                    driver = candidate['driver']
-                    if driver not in driver_best or candidate['distance'] < driver_best[driver]['distance']:
-                        driver_best[driver] = candidate
-                return list(driver_best.values())
-            
-            good_options = dedupe_options(good_options)
-            backup_options = dedupe_options(backup_options)
-            
-            all_options = good_options + backup_options
-            
-            dog_options.append({
-                'dog': dog,
-                'good_options': len(good_options),
-                'backup_options': len(backup_options),
-                'total_options': len(all_options),
-                'best_good': sorted(good_options, key=lambda x: x['distance'])[:2] if good_options else [],
-                'best_backup': sorted(backup_options, key=lambda x: x['distance'])[:2] if backup_options else [],
-                'min_distance': min([opt['distance'] for opt in all_options]) if all_options else float('inf'),
-                'has_good_option': len(good_options) > 0
-            })
-        
-        # Sort by constraint level: good options first, then total options, then distance
-        dog_options.sort(key=lambda x: (x['good_options'], x['total_options'], x['min_distance']))
-        
-        print(f"📊 CONSTRAINT ANALYSIS (most constrained first):")
-        good_count = sum(1 for opt in dog_options if opt['has_good_option'])
-        print(f"💚 {good_count}/{len(dog_options)} dogs have GOOD options (≤{self.PREFERRED_DISTANCE}mi)")
-        print(f"🟡 {len(dog_options) - good_count} dogs need BACKUP assignments (>{self.PREFERRED_DISTANCE}mi)")
-        print()
-        
-        for i, option in enumerate(dog_options):
-            dog = option['dog']
-            good_count = option['good_options']
-            backup_count = option['backup_options']
-            min_dist = option['min_distance']
-            
-            # Status emoji based on good options available
-            if good_count == 0 and backup_count == 0:
-                status_emoji = "🚨"  # No options
-            elif good_count == 0:
-                status_emoji = "⚠️"   # Only backup options
-            elif good_count == 1:
-                status_emoji = "🟡"   # One good option
-            else:
-                status_emoji = "💚"   # Multiple good options
-            
-            print(f"   {i+1:2d}. {status_emoji} {dog['dog_name']}: {good_count} GOOD + {backup_count} backup")
-            print(f"       Groups: {dog['needed_groups']}, Dogs: {dog['num_dogs']}")
-            
-            if good_count > 0:
-                print(f"       💚 GOOD OPTIONS (≤{self.PREFERRED_DISTANCE}mi):")
-                for j, opt in enumerate(option['best_good']):
-                    print(f"         {j+1}. {opt['driver']} - {opt['distance']:.1f}mi via {opt['via_dog']}")
-            
-            if backup_count > 0:
-                print(f"       🟡 BACKUP OPTIONS ({self.PREFERRED_DISTANCE}-{self.MAX_DISTANCE}mi):")
-                for j, opt in enumerate(option['best_backup']):
-                    print(f"         {j+1}. {opt['driver']} - {opt['distance']:.1f}mi via {opt['via_dog']}")
-            
-            if good_count == 0 and backup_count == 0:
-                print(f"       ❌ NO VIABLE OPTIONS")
-            print()
-        
-        return dog_options
-
-    def create_ordering_strategies(self, dog_constraints):
-        """NEW: Create different ordering strategies for assignment - with quality awareness"""
-        
-        strategies = {}
-        
-        # Strategy 1: Most Constrained First (fewest GOOD options first)
-        most_constrained = sorted(dog_constraints, key=lambda x: (x['good_options'], x['total_options'], x['min_distance']))
-        strategies['most_constrained'] = [opt['dog'] for opt in most_constrained]
-        
-        # Strategy 2: Least Constrained First (most GOOD options first) 
-        least_constrained = sorted(dog_constraints, key=lambda x: (-x['good_options'], -x['total_options'], x['min_distance']))
-        strategies['least_constrained'] = [opt['dog'] for opt in least_constrained]
-        
-        # Strategy 3: Good Options First (dogs with good options get priority)
-        good_first = sorted(dog_constraints, key=lambda x: (-x['good_options'], x['min_distance'], x['total_options']))
-        strategies['good_first'] = [opt['dog'] for opt in good_first]
-        
-        # Strategy 4: Shortest Distance First
-        shortest_distance = sorted(dog_constraints, key=lambda x: (x['min_distance'], x['good_options']))
-        strategies['shortest_distance'] = [opt['dog'] for opt in shortest_distance]
-        
-        # Strategy 5: Difficulty First (original approach)
-        def difficulty_score(dog_constraint):
-            dog = dog_constraint['dog']
-            score = 0
-            if len(dog['needed_groups']) > 1:
-                score += len(dog['needed_groups']) * 100
-            if dog['num_dogs'] > 1:
-                score += dog['num_dogs'] * 50
-            return score
-        
-        difficulty_first = sorted(dog_constraints, key=difficulty_score, reverse=True)
-        strategies['difficulty_first'] = [opt['dog'] for opt in difficulty_first]
-        
-        return strategies
-
-    def _try_greedy_walk(self, callout_dog, current_assignments):
-        """Try to make space by moving an existing dog to a very close alternative"""
-        print(f"         🚶 Trying greedy walk for {callout_dog['dog_name']}...")
-        
-        # Find drivers who have the needed groups but are at capacity
-        potential_moves = []
-        
-        for driver, capacity in self.driver_capacities.items():
-            # Check if this driver has the needed groups
-            has_needed_groups = True
-            current_load = self.calculate_driver_load(driver, current_assignments)
-            
-            for group in callout_dog['needed_groups']:
-                group_key = f'group{group}'
-                if capacity.get(group_key, 0) == 0:  # Driver doesn't do this group
-                    has_needed_groups = False
-                    break
-            
-            if not has_needed_groups:
-                continue
-            
-            # Check if driver would have capacity if we moved one dog
-            would_have_capacity_after_move = True
-            for group in callout_dog['needed_groups']:
-                group_key = f'group{group}'
-                # Assume we free up 1 dog worth of space
-                if current_load.get(group_key, 0) - 1 + callout_dog['num_dogs'] > capacity.get(group_key, 0):
-                    would_have_capacity_after_move = False
-                    break
-            
-            if not would_have_capacity_after_move:
-                continue
-            
-            # Find this driver's current dogs that could be moved
-            driver_dogs = [a for a in current_assignments if a.get('driver') == driver]
-            
-            for driver_dog in driver_dogs:
-                # Skip if this dog needs multiple groups (harder to relocate)
-                if len(driver_dog.get('needed_groups', [])) > 1:
-                    continue
-                
-                # Skip if this dog has multiple physical dogs (harder to relocate)
-                if driver_dog.get('num_dogs', 1) > 1:
-                    continue
-                
-                # Find alternative drivers very close to this dog
-                alternatives = []
-                
-                for alt_assignment in current_assignments:
-                    if alt_assignment.get('driver') == driver:  # Skip same driver
-                        continue
-                    
-                    alt_driver = alt_assignment.get('driver')
-                    distance = self.get_distance(driver_dog['dog_id'], alt_assignment['dog_id'])
-                    
-                    if distance > self.GREEDY_WALK_MAX_DISTANCE:
-                        continue
-                    
-                    # Check if alternative driver has capacity for this dog
-                    alt_load = self.calculate_driver_load(alt_driver, current_assignments)
-                    alt_capacity = self.driver_capacities.get(alt_driver, {})
-                    
-                    can_take_dog = True
-                    for group in driver_dog.get('needed_groups', []):
-                        group_key = f'group{group}'
-                        if alt_load.get(group_key, 0) + driver_dog.get('num_dogs', 1) > alt_capacity.get(group_key, 0):
-                            can_take_dog = False
-                            break
-                    
-                    if can_take_dog:
-                        alternatives.append({
-                            'driver': alt_driver,
-                            'distance': distance,
-                            'via_dog': alt_assignment['dog_name']
-                        })
-                
-                if alternatives:
-                    # Sort by distance, pick closest
-                    alternatives.sort(key=lambda x: x['distance'])
-                    best_alt = alternatives[0]
-                    
-                    potential_moves.append({
-                        'original_driver': driver,
-                        'dog_to_move': driver_dog,
-                        'new_driver': best_alt['driver'],
-                        'move_distance': best_alt['distance'],
-                        'via_dog': best_alt['via_dog']
-                    })
-        
-        if not potential_moves:
-            print(f"         ❌ No greedy walk options found")
-            return None
-        
-        # Sort by move distance - prefer shortest moves
-        potential_moves.sort(key=lambda x: x['move_distance'])
-        best_move = potential_moves[0]
-        
-        print(f"         🎯 Found greedy walk option:")
-        print(f"           Move {best_move['dog_to_move']['dog_name']} from {best_move['original_driver']} → {best_move['new_driver']}")
-        print(f"           Distance: {best_move['move_distance']:.1f}mi via {best_move['via_dog']}")
-        print(f"           This frees space in {best_move['original_driver']} for {callout_dog['dog_name']}")
-        
-        return best_move
-
-    def _run_assignment_with_strategy(self, ordered_dogs, strategy_name):
-        """Run assignment algorithm with a specific dog ordering strategy"""
-        print(f"\n   🎯 Running strategy: {strategy_name.upper()}")
-        
-        assignments = []
-        moves_made = []
-        
-        # Build dynamic list of current assignments
-        current_assignments = []
-        
-        # Start with existing assignments
-        for assignment in self.dog_assignments:
-            combined = assignment.get('combined', '')
-            if combined and ':' in combined:
-                driver = combined.split(':', 1)[0].strip()
-                assignment_string = combined.split(':', 1)[1].strip()
-                groups = self._extract_groups_for_capacity_check(assignment_string)
-                
-                current_assignments.append({
-                    'dog_id': assignment['dog_id'],
-                    'dog_name': assignment['dog_name'],
-                    'driver': driver,
-                    'needed_groups': groups,
-                    'num_dogs': assignment['num_dogs']
-                })
-        
-        # Process each callout dog in the given order
-        for callout_dog in ordered_dogs:
-            # Find ALL drivers with capacity, calculate distances to their dogs
-            candidate_drivers = []
-            
-            for assignment in current_assignments:
-                driver = assignment['driver']
-                
-                # Calculate distance to this dog
-                distance = self.get_distance(callout_dog['dog_id'], assignment['dog_id'])
-                
-                # Skip if too far or invalid
-                if distance > self.ABSOLUTE_MAX_DISTANCE or distance >= self.EXCLUSION_DISTANCE:
-                    continue
-                
-                # Check if this driver has capacity in ALL needed groups
-                current_load = self.calculate_driver_load(driver, current_assignments)
-                has_capacity = True
-                
-                for group in callout_dog['needed_groups']:
-                    group_key = f'group{group}'
-                    current = current_load.get(group_key, 0)
-                    max_cap = self.driver_capacities.get(driver, {}).get(group_key, 0)
-                    needed = callout_dog['num_dogs']
-                    
-                    if current + needed > max_cap:
-                        has_capacity = False
-                        break
-                
-                if has_capacity:
-                    candidate_drivers.append({
-                        'driver': driver,
-                        'distance': distance,
-                        'via_dog': assignment['dog_name'],
-                        'via_dog_id': assignment['dog_id']
-                    })
-            
-            if candidate_drivers:
-                # Remove duplicates (same driver multiple times) - keep closest
-                driver_best_distance = {}
-                for candidate in candidate_drivers:
-                    driver = candidate['driver']
-                    if driver not in driver_best_distance or candidate['distance'] < driver_best_distance[driver]['distance']:
-                        driver_best_distance[driver] = candidate
-                
-                unique_candidates = list(driver_best_distance.values())
-                
-                # Sort by distance - CLOSEST WINS!
-                unique_candidates.sort(key=lambda x: x['distance'])
-                
-                # Pick the closest driver
-                winner = unique_candidates[0]
-                driver = winner['driver']
-                distance = winner['distance']
-                
-            else:
-                # No drivers with available capacity - try greedy walk
-                greedy_move = self._try_greedy_walk(callout_dog, current_assignments)
-                
-                if not greedy_move:
-                    # Failed to assign this dog
-                    continue
-                
-                # Execute the greedy walk move
-                dog_to_move = greedy_move['dog_to_move']
-                original_driver = greedy_move['original_driver']
-                new_driver = greedy_move['new_driver']
-                
-                # Update the moved dog's assignment in current_assignments
-                for assignment in current_assignments:
-                    if assignment['dog_id'] == dog_to_move['dog_id']:
-                        assignment['driver'] = new_driver
-                        break
-                
-                # Record the move
-                moves_made.append({
-                    'dog_name': dog_to_move['dog_name'],
-                    'dog_id': dog_to_move['dog_id'],
-                    'from_driver': original_driver,
-                    'to_driver': new_driver,
-                    'distance': greedy_move['move_distance'],
-                    'reason': f"make_space_for_{callout_dog['dog_name']}"
-                })
-                
-                # Now assign the callout dog to the freed space
-                driver = original_driver
-                distance = self.get_distance(callout_dog['dog_id'], dog_to_move['dog_id'])
-            
-            # Create the assignment with quality assessment
-            new_assignment = f"{driver}:{callout_dog['full_assignment_string']}"
-            
-            # Determine assignment quality
-            if distance <= self.PREFERRED_DISTANCE:
-                quality = "GOOD"
-                quality_emoji = "💚"
-            elif distance <= self.MAX_DISTANCE:
-                quality = "BACKUP"
-                quality_emoji = "🟡"
-            else:
-                quality = "EMERGENCY"
-                quality_emoji = "🚨"
-            
-            # Record the assignment
-            assignments.append({
-                'dog_id': callout_dog['dog_id'],
-                'dog_name': callout_dog['dog_name'],
-                'new_assignment': new_assignment,
-                'driver': driver,
-                'distance': distance,
-                'quality': quality,
-                'assignment_type': 'regular'
-            })
-            
-            # Update current_assignments with the new dog
-            current_assignments.append({
-                'dog_id': callout_dog['dog_id'],
-                'dog_name': callout_dog['dog_name'],
-                'driver': driver,
-                'needed_groups': callout_dog['needed_groups'],
-                'num_dogs': callout_dog['num_dogs']
-            })
-        
-        return assignments, moves_made
-
     def reassign_dogs_multi_strategy_optimization(self):
         """NEW: Locality-first algorithm with fallback to multi-strategy"""
         print("\n🔄 Starting LOCALITY-FIRST ASSIGNMENT SYSTEM...")
@@ -1497,183 +1090,8 @@ class DogReassignmentSystem:
             return self.locality_first_assignment()
         except Exception as e:
             print(f"⚠️ Locality-first algorithm failed: {e}")
-            print("🔄 Falling back to multi-strategy optimization...")
-            return self._fallback_multi_strategy_optimization()
-
-    def _fallback_multi_strategy_optimization(self):
-        """Fallback: Try multiple ordering strategies and pick the best practical result"""
-        print("\n🔄 FALLBACK: PRACTICAL MULTI-STRATEGY OPTIMIZATION...")
-        print("🎯 Strategy: Maximize assignments ≤0.5mi (GOOD quality)")
-        print("📊 Evaluation: Quality-weighted scoring (GOOD=1000, BACKUP=300, EMERGENCY=50)")
-        print("🚨 Focus: Which dogs can get truly workable assignments vs need review")
-        print("=" * 80)
-        
-        # Temporarily adjust thresholds for legacy algorithm
-        original_preferred = self.PREFERRED_DISTANCE
-        original_max = self.MAX_DISTANCE
-        
-        self.PREFERRED_DISTANCE = 0.5
-        self.MAX_DISTANCE = 1.0
-        
-        dogs_to_reassign = self.get_dogs_to_reassign()
-        
-        if not dogs_to_reassign:
-            print("✅ No callouts detected - all dogs have drivers assigned!")
-            # Restore original thresholds
-            self.PREFERRED_DISTANCE = original_preferred
-            self.MAX_DISTANCE = original_max
+            print("🔄 Falling back to basic assignment...")
             return []
-        
-        num_dogs = len(dogs_to_reassign)
-        print(f"📊 Found {num_dogs} callout dogs")
-        
-        # Build initial current assignments for constraint analysis
-        current_assignments = []
-        for assignment in self.dog_assignments:
-            combined = assignment.get('combined', '')
-            if combined and ':' in combined:
-                driver = combined.split(':', 1)[0].strip()
-                assignment_string = combined.split(':', 1)[1].strip()
-                groups = self._extract_groups_for_capacity_check(assignment_string)
-                
-                current_assignments.append({
-                    'dog_id': assignment['dog_id'],
-                    'dog_name': assignment['dog_name'],
-                    'driver': driver,
-                    'needed_groups': groups,
-                    'num_dogs': assignment['num_dogs']
-                })
-        
-        # Analyze constraints for each dog
-        dog_constraints = self.analyze_dog_constraints(dogs_to_reassign, current_assignments)
-        
-        # Create different ordering strategies
-        strategies = self.create_ordering_strategies(dog_constraints)
-        
-        print(f"\n🧪 TESTING {len(strategies)} ORDERING STRATEGIES (Quality-Focused)...")
-        
-        strategy_results = {}
-        
-        for strategy_name, ordered_dogs in strategies.items():
-            print(f"\n{'='*60}")
-            print(f"🧪 Testing Strategy: {strategy_name.upper()}")
-            print(f"📋 Order: {', '.join([dog['dog_name'] for dog in ordered_dogs[:5]])}{'...' if len(ordered_dogs) > 5 else ''}")
-            
-            start_time = time.time()
-            assignments, moves = self._run_assignment_with_strategy(ordered_dogs, strategy_name)
-            elapsed_time = time.time() - start_time
-            
-            # Calculate strategy score with quality weighting
-            total_assigned = len(assignments)
-            good_assigned = len([a for a in assignments if a.get('quality') == 'GOOD'])
-            backup_assigned = len([a for a in assignments if a.get('quality') == 'BACKUP'])
-            emergency_assigned = len([a for a in assignments if a.get('quality') == 'EMERGENCY'])
-            avg_distance = np.mean([a['distance'] for a in assignments]) if assignments else float('inf')
-            total_moves = len(moves)
-            
-            # Quality-weighted scoring: heavily reward good assignments, penalize backup/emergency
-            score = (good_assigned * 1000) + (backup_assigned * 300) + (emergency_assigned * 50) - (total_moves * 5)
-            
-            strategy_results[strategy_name] = {
-                'assignments': assignments,
-                'moves': moves,
-                'total_assigned': total_assigned,
-                'good_assigned': good_assigned,
-                'backup_assigned': backup_assigned,
-                'emergency_assigned': emergency_assigned,
-                'avg_distance': avg_distance,
-                'total_moves': total_moves,
-                'score': score,
-                'elapsed_time': elapsed_time
-            }
-            
-            print(f"   📊 Results: {total_assigned}/{num_dogs} assigned ({good_assigned} GOOD, {backup_assigned} backup, {emergency_assigned} emergency)")
-            print(f"   📏 Average distance: {avg_distance:.1f}mi, {total_moves} moves")
-            print(f"   🏆 Quality score: {score:.1f} (higher = better)")
-            print(f"   ⏱️ Time: {elapsed_time:.1f}s")
-        
-        # Find the best strategy
-        best_strategy = max(strategy_results.items(), key=lambda x: x[1]['score'])
-        best_name, best_result = best_strategy
-        
-        print(f"\n🏆 WINNING STRATEGY: {best_name.upper()}")
-        print(f"   📊 {best_result['total_assigned']}/{num_dogs} dogs assigned")
-        print(f"   💚 {best_result['good_assigned']} GOOD assignments (≤{self.PREFERRED_DISTANCE}mi)")
-        print(f"   🟡 {best_result['backup_assigned']} BACKUP assignments ({self.PREFERRED_DISTANCE}-{self.MAX_DISTANCE}mi)")
-        print(f"   🚨 {best_result['emergency_assigned']} EMERGENCY assignments (>{self.MAX_DISTANCE}mi)")
-        print(f"   📏 Average distance: {best_result['avg_distance']:.1f} miles")
-        print(f"   🚶 Greedy walk moves: {best_result['total_moves']}")
-        print(f"   🏆 Quality score: {best_result['score']:.1f}")
-        
-        # Show comparison table
-        print(f"\n📊 STRATEGY COMPARISON:")
-        print(f"{'Strategy':<15} {'Total':<6} {'Good':<5} {'Backup':<7} {'Emerg':<6} {'Score':<8}")
-        print("-" * 65)
-        
-        for name, result in sorted(strategy_results.items(), key=lambda x: x[1]['score'], reverse=True):
-            total_str = f"{result['total_assigned']}/{num_dogs}"
-            winner_mark = "🏆 " if name == best_name else "   "
-            
-            print(f"{winner_mark}{name:<12} {total_str:<6} {result['good_assigned']:<5} {result['backup_assigned']:<7} {result['emergency_assigned']:<6} {result['score']:<8.0f}")
-        
-        # Show detailed assignment breakdown
-        if best_result['assignments']:
-            print(f"\n📋 DETAILED ASSIGNMENT BREAKDOWN:")
-            
-            good_assignments = [a for a in best_result['assignments'] if a.get('quality') == 'GOOD']
-            backup_assignments = [a for a in best_result['assignments'] if a.get('quality') == 'BACKUP']
-            emergency_assignments = [a for a in best_result['assignments'] if a.get('quality') == 'EMERGENCY']
-            
-            if good_assignments:
-                print(f"\n💚 GOOD ASSIGNMENTS (≤{self.PREFERRED_DISTANCE}mi) - Ready to deploy:")
-                for assignment in good_assignments:
-                    print(f"   ✅ {assignment['dog_name']} → {assignment['driver']} ({assignment['distance']:.1f}mi)")
-            
-            if backup_assignments:
-                print(f"\n🟡 BACKUP ASSIGNMENTS ({self.PREFERRED_DISTANCE}-{self.MAX_DISTANCE}mi) - May need review:")
-                for assignment in backup_assignments:
-                    print(f"   ⚠️ {assignment['dog_name']} → {assignment['driver']} ({assignment['distance']:.1f}mi)")
-            
-            if emergency_assignments:
-                print(f"\n🚨 EMERGENCY ASSIGNMENTS (>{self.MAX_DISTANCE}mi) - Needs manual intervention:")
-                for assignment in emergency_assignments:
-                    print(f"   ❌ {assignment['dog_name']} → {assignment['driver']} ({assignment['distance']:.1f}mi)")
-            
-            # Summary recommendation
-            practical_count = len(good_assignments)
-            print(f"\n🎯 RECOMMENDATION:")
-            print(f"   💚 {practical_count}/{num_dogs} dogs have practical assignments (≤{self.PREFERRED_DISTANCE}mi)")
-            
-            if backup_assignments:
-                print(f"   🟡 {len(backup_assignments)} assignments need review (drivers may find distance challenging)")
-            
-            if emergency_assignments:
-                print(f"   🚨 {len(emergency_assignments)} dogs need manual intervention (distance too far for regular assignment)")
-            
-            if practical_count / num_dogs >= 0.8:
-                print(f"   ✅ GOOD SUCCESS RATE: {practical_count/num_dogs*100:.0f}% of dogs have workable assignments")
-            elif practical_count / num_dogs >= 0.5:
-                print(f"   ⚠️ MODERATE SUCCESS RATE: {practical_count/num_dogs*100:.0f}% of dogs have workable assignments")
-            else:
-                print(f"   ❌ LOW SUCCESS RATE: Only {practical_count/num_dogs*100:.0f}% of dogs have workable assignments")
-                print(f"      Consider expanding driver network or adjusting group boundaries")
-        
-        # Store moves for potential writing to sheets
-        self.greedy_moves_made = best_result['moves']
-        
-        # Return the best assignments with a practical summary
-        practical_assignments = [a for a in best_result['assignments'] if a.get('quality') == 'GOOD']
-        
-        print(f"\n🎯 PRACTICAL SUMMARY:")
-        print(f"   💚 {len(practical_assignments)}/{num_dogs} dogs getting GOOD assignments (≤{self.PREFERRED_DISTANCE}mi)")
-        print(f"   🟡 {best_result['backup_assigned']} dogs need backup assignments (review recommended)")
-        print(f"   🚨 {best_result['emergency_assigned']} dogs need manual intervention")
-        
-        # Restore original thresholds
-        self.PREFERRED_DISTANCE = original_preferred
-        self.MAX_DISTANCE = original_max
-        
-        return best_result['assignments']
 
     def write_results_to_sheets(self, reassignments):
         """Write reassignment results and greedy walk moves back to Google Sheets"""
@@ -1839,13 +1257,13 @@ class DogReassignmentSystem:
                 success_msg += f" (including {len(self.greedy_moves_made)} cascading moves)"
             
             print(success_msg)
-            print(f"🎯 Used locality-first algorithm with scaling adjacent group thresholds")
+            print(f"🎯 Used locality-first algorithm with TODAY-ONLY optimization")
             
             # Send Slack notification
             slack_webhook = os.environ.get('SLACK_WEBHOOK_URL')
             if slack_webhook:
                 try:
-                    message = f"🐕 Dog Reassignment Complete: {updates_count} assignments updated using locality-first + scaling thresholds"
+                    message = f"🐕 Dog Reassignment Complete: {updates_count} assignments updated using locality-first + today-only optimization"
                     slack_message = {"text": message}
                     response = requests.post(slack_webhook, json=slack_message, timeout=10)
                     if response.status_code == 200:
@@ -1861,15 +1279,321 @@ class DogReassignmentSystem:
             print(f"🔍 Full error: {traceback.format_exc()}")
             return False
 
+
+# ============================================================================
+# TODAY-ONLY OPTIMIZATION CLASSES
+# ============================================================================
+
+class TodayOnlyOptimizer:
+    """Optimizes distance matrix to focus only on dogs going today"""
+    
+    def __init__(self, system):
+        self.system = system
+        self.original_distance_function = system.get_distance
+        self.today_matrix = None
+        self.optimization_stats = {}
+    
+    def optimize_system(self):
+        """Main optimization function - call this after loading data"""
+        print("\n🚀 OPTIMIZING FOR TODAY-ONLY ASSIGNMENTS...")
+        print("🎯 Building focused distance matrix for cascading logic")
+        print("=" * 60)
+        
+        # Step 1: Identify all dogs going today
+        today_dogs = self._get_all_today_dogs()
+        
+        if not today_dogs:
+            print("❌ No dogs going today found")
+            return False
+        
+        # Step 2: Build focused matrix
+        success = self._build_focused_matrix(today_dogs)
+        
+        if success:
+            # Step 3: Replace system's distance function
+            self._install_optimized_distance_function()
+            
+            # Step 4: Report optimization results
+            self._report_optimization_results()
+            
+            return True
+        
+        return False
+    
+    def _get_all_today_dogs(self):
+        """Get ALL dogs going today (callout + assigned)"""
+        print("🔍 Identifying all dogs going today...")
+        
+        # Get callout dogs (need drivers)
+        callout_dogs = self.system.get_dogs_to_reassign()
+        callout_dog_ids = [dog['dog_id'] for dog in callout_dogs]
+        
+        # Get assigned dogs (have drivers today)
+        assigned_dog_ids = []
+        for assignment in self.system.dog_assignments:
+            combined = assignment.get('combined', '')
+            dog_id = assignment.get('dog_id', '')
+            
+            # Include if: has driver assignment AND valid dog ID
+            if combined and ':' in combined and dog_id:
+                assigned_dog_ids.append(dog_id)
+        
+        # Combine and deduplicate
+        all_today_dogs = list(set(callout_dog_ids + assigned_dog_ids))
+        
+        print(f"   🚨 Callout dogs (need drivers): {len(callout_dog_ids)}")
+        print(f"   ✅ Assigned dogs (have drivers): {len(assigned_dog_ids)}")
+        print(f"   🎯 Total dogs going today: {len(all_today_dogs)}")
+        
+        return all_today_dogs
+    
+    def _build_focused_matrix(self, today_dogs):
+        """Build distance matrix for only today's dogs"""
+        print(f"\n📊 Building focused distance matrix...")
+        
+        # Check which today's dogs exist in the full matrix
+        available_dogs = [dog_id for dog_id in today_dogs 
+                         if dog_id in self.system.distance_matrix.index 
+                         and dog_id in self.system.distance_matrix.columns]
+        
+        missing_dogs = set(today_dogs) - set(available_dogs)
+        if missing_dogs:
+            print(f"   ⚠️  {len(missing_dogs)} dogs missing from distance matrix")
+            if len(missing_dogs) <= 5:
+                print(f"      Missing: {list(missing_dogs)}")
+        
+        if len(available_dogs) < 10:
+            print(f"   ❌ Too few dogs available in matrix: {len(available_dogs)}")
+            return False
+        
+        # Extract focused submatrix
+        self.today_matrix = self.system.distance_matrix.loc[available_dogs, available_dogs]
+        
+        # Calculate optimization stats
+        original_size = len(self.system.distance_matrix)
+        new_size = len(self.today_matrix)
+        reduction_percent = (1 - new_size/original_size) * 100
+        
+        self.optimization_stats = {
+            'original_dogs': original_size,
+            'today_dogs': new_size,
+            'reduction_percent': reduction_percent,
+            'original_cells': original_size * original_size,
+            'today_cells': new_size * new_size
+        }
+        
+        print(f"   ✅ Focused matrix created: {new_size} × {new_size}")
+        print(f"   📉 Size reduction: {original_size} → {new_size} dogs ({reduction_percent:.1f}% smaller)")
+        print(f"   📉 Cell reduction: {self.optimization_stats['original_cells']:,} → {self.optimization_stats['today_cells']:,}")
+        
+        # Analyze distance quality in focused matrix
+        self._analyze_distance_quality()
+        
+        return True
+    
+    def _analyze_distance_quality(self):
+        """Analyze the quality of distances in the focused matrix"""
+        print(f"\n🔍 Analyzing distance quality in focused matrix...")
+        
+        # Get all non-diagonal distances
+        all_distances = []
+        for i, dog1 in enumerate(self.today_matrix.index):
+            for j, dog2 in enumerate(self.today_matrix.columns):
+                if i != j:  # Skip diagonal (dog to itself)
+                    distance = self.today_matrix.loc[dog1, dog2]
+                    if not pd.isna(distance):
+                        all_distances.append(distance)
+        
+        if not all_distances:
+            print("   ❌ No valid distances found")
+            return
+        
+        distances = np.array(all_distances)
+        total_distances = len(distances)
+        
+        # Categorize distances
+        placeholder_100 = (distances == 100.0).sum()
+        negative = (distances < 0).sum()
+        zero = (distances == 0.0).sum()
+        realistic = distances[(distances > 0) & (distances < 100)]
+        
+        print(f"   📊 Distance distribution:")
+        print(f"      Total distance pairs: {total_distances:,}")
+        print(f"      🚫 Placeholder (100.0): {placeholder_100:,} ({placeholder_100/total_distances*100:.1f}%)")
+        print(f"      ✅ Realistic (0-100mi): {len(realistic):,} ({len(realistic)/total_distances*100:.1f}%)")
+        print(f"      ⚠️  Zero/Negative: {zero + negative:,}")
+        
+        if len(realistic) > 0:
+            # Quality breakdown for realistic distances
+            excellent = (realistic <= 0.2).sum()
+            good = ((realistic > 0.2) & (realistic <= 0.5)).sum()
+            backup = ((realistic > 0.5) & (realistic <= 1.0)).sum()
+            far = (realistic > 1.0).sum()
+            
+            print(f"   🎯 Realistic distance quality:")
+            print(f"      💚 Excellent (≤0.2mi): {excellent:,} ({excellent/len(realistic)*100:.1f}%)")
+            print(f"      ✅ Good (0.2-0.5mi): {good:,} ({good/len(realistic)*100:.1f}%)")
+            print(f"      🟡 Backup (0.5-1.0mi): {backup:,} ({backup/len(realistic)*100:.1f}%)")
+            print(f"      🚨 Far (>1.0mi): {far:,} ({far/len(realistic)*100:.1f}%)")
+            print(f"      📏 Range: {realistic.min():.1f} - {realistic.max():.1f}mi, Avg: {realistic.mean():.1f}mi")
+            
+            # Store quality stats
+            self.optimization_stats.update({
+                'realistic_percent': len(realistic)/total_distances*100,
+                'excellent_count': excellent,
+                'good_count': good,
+                'backup_count': backup
+            })
+        
+    def _install_optimized_distance_function(self):
+        """Replace system's distance function with optimized version"""
+        def optimized_get_distance(dog1_id, dog2_id):
+            """Optimized distance function using today-only matrix first"""
+            try:
+                # Try today matrix first (faster, more focused)
+                if (self.today_matrix is not None and 
+                    dog1_id in self.today_matrix.index and 
+                    dog2_id in self.today_matrix.columns):
+                    
+                    distance = self.today_matrix.loc[dog1_id, dog2_id]
+                    if not pd.isna(distance):
+                        return float(distance)
+                
+                # Fallback to original function for edge cases
+                return self.original_distance_function(dog1_id, dog2_id)
+                
+            except Exception:
+                return float('inf')
+        
+        # Replace the system's distance function
+        self.system.get_distance = optimized_get_distance
+        print(f"   ✅ Installed optimized distance function")
+    
+    def _report_optimization_results(self):
+        """Report the optimization results"""
+        stats = self.optimization_stats
+        
+        print(f"\n🏆 OPTIMIZATION COMPLETE!")
+        print(f"   📉 Matrix size: {stats['original_dogs']} → {stats['today_dogs']} dogs")
+        print(f"   📉 Memory usage: {stats['reduction_percent']:.1f}% reduction") 
+        print(f"   📉 Processing: {stats['today_cells']/stats['original_cells']*100:.1f}% of original workload")
+        
+        if 'realistic_percent' in stats:
+            print(f"   ✅ Realistic distances: {stats['realistic_percent']:.1f}% (vs ~8% in full matrix)")
+            print(f"   🎯 Assignment potential: {stats['excellent_count'] + stats['good_count']:,} good options")
+        
+        print(f"   🔄 Cascading enabled: All today's dogs can move to any today driver")
+        print(f"   🚫 Filtered out: Dogs not going today + their placeholder distances")
+
+
+def optimize_system_for_today(system):
+    """Main integration function - call this after loading data"""
+    
+    optimizer = TodayOnlyOptimizer(system)
+    success = optimizer.optimize_system()
+    
+    if success:
+        print(f"\n🎯 SYSTEM READY FOR TODAY-ONLY ASSIGNMENTS")
+        print(f"🔄 Cascading logic enabled with focused distance matrix")
+        
+        # Quick preview of what's now possible
+        preview_viable_assignments(system, optimizer)
+        
+    return success
+
+
+def preview_viable_assignments(system, optimizer):
+    """Show a quick preview of viable assignments after optimization"""
+    print(f"\n👀 QUICK PREVIEW: Viable assignments after optimization")
+    
+    callout_dogs = system.get_dogs_to_reassign()
+    if not callout_dogs:
+        print("   ✅ No callouts - all dogs have drivers!")
+        return
+    
+    # Show just first 3 callout dogs as preview
+    for i, callout_dog in enumerate(callout_dogs[:3]):
+        print(f"\n   {i+1}. {callout_dog['dog_name']} ({callout_dog['dog_id']}) - Groups: {callout_dog['needed_groups']}")
+        
+        # Find drivers with available capacity and reasonable distances
+        viable_options = []
+        
+        # Build driver list from current assignments
+        driver_dogs = {}
+        for assignment in system.dog_assignments:
+            combined = assignment.get('combined', '')
+            if combined and ':' in combined:
+                driver = combined.split(':', 1)[0].strip()
+                if driver not in driver_dogs:
+                    driver_dogs[driver] = []
+                driver_dogs[driver].append(assignment)
+        
+        # Check each driver
+        for driver, driver_assignments in driver_dogs.items():
+            # Find closest distance to any of this driver's dogs
+            min_distance = float('inf')
+            closest_dog = None
+            
+            for dog_assignment in driver_assignments:
+                distance = system.get_distance(callout_dog['dog_id'], dog_assignment['dog_id'])
+                if distance < min_distance and distance < 100:  # Skip placeholders
+                    min_distance = distance
+                    closest_dog = dog_assignment['dog_name']
+            
+            if min_distance < float('inf'):
+                # Quick capacity check
+                try:
+                    current_load = system.calculate_driver_load(driver)
+                    driver_capacity = system.driver_capacities.get(driver, {})
+                    
+                    has_capacity = True
+                    for group in callout_dog['needed_groups']:
+                        group_key = f'group{group}'
+                        current = current_load.get(group_key, 0)
+                        max_cap = driver_capacity.get(group_key, 0)
+                        needed = callout_dog['num_dogs']
+                        
+                        if current + needed > max_cap:
+                            has_capacity = False
+                            break
+                    
+                    if has_capacity:
+                        viable_options.append({
+                            'driver': driver,
+                            'distance': min_distance,
+                            'closest_dog': closest_dog
+                        })
+                except:
+                    pass
+        
+        # Sort by distance and show best options
+        viable_options.sort(key=lambda x: x['distance'])
+        
+        good_options = [opt for opt in viable_options if opt['distance'] <= 0.5]
+        backup_options = [opt for opt in viable_options if 0.5 < opt['distance'] <= 1.0]
+        
+        print(f"      💚 Good options (≤0.5mi): {len(good_options)}")
+        print(f"      🟡 Backup options (0.5-1.0mi): {len(backup_options)}")
+        
+        # Show top 3 viable options
+        for j, option in enumerate(viable_options[:3]):
+            quality_emoji = "💚" if option['distance'] <= 0.5 else "🟡" if option['distance'] <= 1.0 else "🚨"
+            print(f"         {j+1}. {quality_emoji} {option['driver']} - {option['distance']:.1f}mi via {option['closest_dog']}")
+        
+        if not viable_options:
+            print(f"      ❌ No viable options found (may need cascading moves)")
+
+
 def main():
     """Main function to run the dog reassignment system"""
-    print("🚀 Enhanced Dog Reassignment System - LOCALITY-FIRST OPTIMIZATION")
+    print("🚀 Enhanced Dog Reassignment System - LOCALITY-FIRST + TODAY-ONLY OPTIMIZATION")
     print("🎯 NEW: Proximity-first assignment with dynamic cascading moves")
     print("📏 Starts at 0.2mi, expands to 0.7mi in 0.1mi increments")
     print("🔄 Adjacent groups scale with radius (50% of current radius)")
     print("🚶 Cascading moves up to 0.5mi to free space dynamically")
     print("🧅 Onion-layer backflow pushes outer assignments out to create inner space")
     print("📊 Quality: GOOD ≤0.2mi, BACKUP ≤0.5mi, EMERGENCY >0.5mi")
+    print("🎯 TODAY-ONLY: Focus on dogs going today for massive optimization")
     print("=" * 80)
     
     # Initialize system
@@ -1895,25 +1619,35 @@ def main():
         print("❌ Failed to load driver capacities")
         return
     
-    # Run the locality-first assignment
+    # 🎯 NEW: Add today-only optimization for massive performance boost
+    optimization_success = optimize_system_for_today(system)
+    
+    if optimization_success:
+        print("\n🎯 Running with TODAY-ONLY optimization...")
+        print("🔄 Cascading moves optimized for dogs going today only")
+    else:
+        print("\n⚠️  Running with full matrix (optimization failed)...")
+    
+    # Run the locality-first assignment (UNCHANGED)
     print("\n🔄 Processing callout assignments...")
     
     reassignments = system.reassign_dogs_multi_strategy_optimization()
     
-    # Ensure reassignments is always a list
+    # Ensure reassignments is always a list (UNCHANGED)
     if reassignments is None:
         reassignments = []
     
-    # Write results
+    # Write results (UNCHANGED)
     if reassignments:
         write_success = system.write_results_to_sheets(reassignments)
         if write_success:
             print(f"\n🎉 SUCCESS! Processed {len(reassignments)} callout assignments")
-            print(f"✅ Used locality-first algorithm with scaling adjacent group thresholds")
+            print(f"✅ Used locality-first algorithm with TODAY-ONLY optimization")
         else:
             print(f"\n❌ Failed to write {len(reassignments)} results to Google Sheets")
     else:
         print(f"\n✅ No callout assignments needed - all drivers available or no valid assignments found")
+
 
 if __name__ == "__main__":
     main()
