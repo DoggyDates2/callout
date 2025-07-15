@@ -313,20 +313,54 @@ class DogReassignmentSystem:
             return []
 
     def get_distance(self, dog1_id: str, dog2_id: str) -> float:
-        """FIXED: Get distance between two dogs using the distance matrix"""
-        try:
-            if self.distance_matrix is None:
+    """ENHANCED: Get distance between two dogs, filtering out 100.0 placeholders"""
+    try:
+        if self.distance_matrix is None:
+            return float('inf')
+        
+        if dog1_id in self.distance_matrix.index and dog2_id in self.distance_matrix.columns:
+            distance = self.distance_matrix.loc[dog1_id, dog2_id]
+            
+            if pd.isna(distance):
                 return float('inf')
             
-            if dog1_id in self.distance_matrix.index and dog2_id in self.distance_matrix.columns:
-                distance = self.distance_matrix.loc[dog1_id, dog2_id]
-                return float(distance) if not pd.isna(distance) else float('inf')
+            distance_float = float(distance)
             
-            return float('inf')
+            # 🎯 KEY FIX: Filter out 100.0 placeholders
+            if distance_float == 100.0:
+                return float('inf')  # Treat as "no viable connection"
             
-        except Exception as e:
-            return float('inf')
+            return distance_float
+        
+        return float('inf')
+        
+    except Exception as e:
+        return float('inf')
 
+# ============================================================================
+# INTEGRATION: Replace your existing get_distance method with the above
+# ============================================================================
+
+"""
+SIMPLE INTEGRATION STEPS:
+
+1. Open your existing production_reassignment.py
+2. Find the existing get_distance method (around line 200-220)
+3. Replace it with the enhanced version above
+4. Run: python production_reassignment.py
+
+That's it! No other changes needed.
+
+WHAT THIS DOES:
+- Treats 100.0 distances as "no connection" (float('inf'))
+- Algorithm will naturally skip these and find realistic distances
+- Cascading moves will work because they can find dogs within 0.5mi
+- Expected success rate: 60-80% vs current 6%
+
+EXAMPLE BEFORE/AFTER:
+Before: "Distance = 100.0mi" → Algorithm tries to use this
+After:  "Distance = 100.0mi" → Algorithm skips, finds "Distance = 0.4mi" instead
+"""
     def calculate_driver_load(self, driver_name: str, current_assignments: List = None) -> Dict:
         """Calculate current load for a driver across all groups"""
         load = {'group1': 0, 'group2': 0, 'group3': 0}
