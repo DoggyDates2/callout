@@ -1006,6 +1006,19 @@ class DogReassignmentSystem:
                             'reason': f"strategic_free_space_for_{callout_dog['dog_name']}"
                         })
                         
+                        # 🎯 CRITICAL FIX: Update any existing assignments for moved dog
+                        moved_dog_id = move_result['moved_dog']['dog_id']
+                        for existing_assignment in assignments_made:
+                            if existing_assignment['dog_id'] == moved_dog_id:
+                                # Update the assignment to show final location
+                                old_driver = existing_assignment['driver']
+                                new_driver = move_result['to_driver']
+                                existing_assignment['driver'] = new_driver
+                                existing_assignment['new_assignment'] = existing_assignment['new_assignment'].replace(f"{old_driver}:", f"{new_driver}:")
+                                existing_assignment['assignment_type'] = 'moved_by_strategic_cascading'
+                                print(f"      🔄 Updated final assignment: {move_result['moved_dog']['dog_name']} → {new_driver}")
+                                break
+                        
                         # Now assign the callout dog to the freed space
                         driver = best_blocked['driver']
                         distance = best_blocked['distance']
