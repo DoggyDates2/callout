@@ -1,5 +1,5 @@
 # production_reassignment.py
-# COMPLETE WORKING VERSION: Locality-first assignment with 100.0 placeholder filter
+# COMPLETE WORKING VERSION: Locality-first assignment with 1.5 mile range and 75% adjacent threshold
 
 import pandas as pd
 import numpy as np
@@ -25,7 +25,7 @@ class DogReassignmentSystem:
         # DISTANCE LIMITS - LOCALITY-FIRST THRESHOLDS
         self.PREFERRED_DISTANCE = 0.2  # Ideal assignments: immediate proximity
         self.MAX_DISTANCE = 0.5  # Backup assignments: reasonable with moves
-        self.ABSOLUTE_MAX_DISTANCE = 0.7  # Search limit for locality-first algorithm
+        self.ABSOLUTE_MAX_DISTANCE = 1.5  # Search limit for locality-first algorithm (EXTENDED!)
         self.CASCADING_MOVE_MAX = 0.5  # Max distance for cascading swaps
         self.ADJACENT_GROUP_DISTANCE = 0.1  # Base adjacent group distance (scales with radius)
         self.EXCLUSION_DISTANCE = 200.0  # Temporarily increased from 100.0 to see if 100 is placeholder
@@ -313,24 +313,14 @@ class DogReassignmentSystem:
             return []
 
     def get_distance(self, dog1_id: str, dog2_id: str) -> float:
-        """ENHANCED: Get distance between two dogs, filtering out 100.0 placeholders"""
+        """Get distance between two dogs using the distance matrix (reverted - no filtering)"""
         try:
             if self.distance_matrix is None:
                 return float('inf')
             
             if dog1_id in self.distance_matrix.index and dog2_id in self.distance_matrix.columns:
                 distance = self.distance_matrix.loc[dog1_id, dog2_id]
-                
-                if pd.isna(distance):
-                    return float('inf')
-                
-                distance_float = float(distance)
-                
-                # 🎯 KEY FIX: Filter out 100.0 placeholders
-                if distance_float == 100.0:
-                    return float('inf')  # Treat as "no viable connection"
-                
-                return distance_float
+                return float(distance) if not pd.isna(distance) else float('inf')
             
             return float('inf')
             
@@ -385,30 +375,33 @@ class DogReassignmentSystem:
         return load
 
     def check_group_compatibility(self, callout_groups, driver_groups, distance, current_radius=None):
-        """Check if groups are compatible considering adjacent group penalty"""
+        """FIXED: Radius scaling with proper fallback and 75% adjacent threshold"""
         # Extract unique group numbers from both sets
         callout_set = set(callout_groups)
         driver_set = set(driver_groups)
         
-        # Perfect match - same groups
-        if callout_set.intersection(driver_set):
-            # Use current radius if provided, otherwise use default preferred distance
-            max_distance = current_radius if current_radius else self.PREFERRED_DISTANCE
-            return distance <= max_distance
+        # Determine thresholds based on current radius
+        if current_radius is not None:
+            # RADIUS SCALING: Use the step-by-step approach
+            perfect_threshold = current_radius
+            adjacent_threshold = current_radius * 0.75  # 75% of current radius
+        else:
+            # FALLBACK: For diagnostics when no radius provided, use generous limits
+            perfect_threshold = 1.5  # Up to 1.5 miles for exact matches
+            adjacent_threshold = 1.125  # Up to 1.125 miles (75% of 1.5) for adjacent groups
         
-        # Adjacent groups - need to be proportionally closer (50% of current radius)
+        # 1. PERFECT MATCH - same groups
+        if callout_set.intersection(driver_set):
+            return distance <= perfect_threshold
+        
+        # 2. ADJACENT GROUPS - neighboring groups  
         adjacent_pairs = [(1, 2), (2, 3), (2, 1), (3, 2)]
         for callout_group in callout_set:
             for driver_group in driver_set:
                 if (callout_group, driver_group) in adjacent_pairs:
-                    # Scale adjacent group threshold with current search radius
-                    if current_radius:
-                        adjacent_threshold = current_radius * 0.5  # 50% of current radius
-                    else:
-                        adjacent_threshold = self.ADJACENT_GROUP_DISTANCE
                     return distance <= adjacent_threshold
         
-        # No compatibility
+        # 3. NO MATCH - incompatible groups
         return False
 
     def get_current_driver_dogs(self, driver_name, current_assignments):
@@ -517,13 +510,13 @@ class DogReassignmentSystem:
         return None
 
     def locality_first_assignment(self):
-        """NEW: Locality-first assignment algorithm with cascading moves"""
+        """Locality-first assignment algorithm with 1.5 mile range and 75% adjacent threshold"""
         print("\n🎯 LOCALITY-FIRST ASSIGNMENT ALGORITHM")
         print("🔄 Step-by-step proximity optimization with dynamic state updates")
-        print("📏 Starting at 0.2mi, expanding to 0.7mi in 0.1mi increments")
-        print("🔄 Adjacent groups scale with radius (50% of current radius)")
+        print("📏 Starting at 0.2mi, expanding to 1.5mi in 0.1mi increments")
+        print("🔄 Adjacent groups scale with radius (75% of current radius)")
         print("🚶 Cascading moves up to 0.5mi to free space")
-        print("🎯 FILTERING OUT 100.0 PLACEHOLDERS for realistic distances")
+        print("🎯 EXTENDED RANGE: Exact matches up to 1.5mi, adjacent up to 1.125mi")
         print("=" * 80)
         
         dogs_to_reassign = self.get_dogs_to_reassign()
@@ -572,8 +565,8 @@ class DogReassignmentSystem:
         else:
             print(f"   ✅ All callout dog IDs found in distance matrix")
             
-            # Test a few actual distance lookups
-            print(f"   🔍 Sample distance checks:")
+            # Test a few actual distance lookups with new compatibility rules
+            print(f"   🔍 Sample distance checks with 1.5mi range:")
             for i, dog in enumerate(dogs_remaining[:2]):
                 print(f"     Testing callout dog: {dog['dog_name']} ({dog['dog_id']})")
                 for j, assignment in enumerate(current_assignments[:5]):
@@ -581,15 +574,17 @@ class DogReassignmentSystem:
                         # Raw matrix lookup
                         raw_value = self.distance_matrix.loc[dog['dog_id'], assignment['dog_id']]
                         
-                        # Through our enhanced function
+                        # Through our function
                         distance = self.get_distance(dog['dog_id'], assignment['dog_id'])
                         
-                        if raw_value == 100.0:
-                            print(f"       Raw matrix[{dog['dog_id']}, {assignment['dog_id']}] = {raw_value} → FILTERED OUT")
-                            print(f"       get_distance() = {distance} (inf = filtered placeholder)")
-                        else:
-                            print(f"       Raw matrix[{dog['dog_id']}, {assignment['dog_id']}] = {raw_value}")
-                            print(f"       get_distance() = {distance:.3f}mi ✅")
+                        # Check group compatibility with new rules
+                        compatible = self.check_group_compatibility(
+                            dog['needed_groups'], 
+                            assignment['needed_groups'], 
+                            distance
+                        )
+                        
+                        print(f"       Raw: {raw_value} → Distance: {distance:.3f}mi → Compatible: {compatible}")
                         
                     except Exception as e:
                         print(f"       ❌ Error: {e}")
@@ -615,9 +610,9 @@ class DogReassignmentSystem:
             available = total_capacity[group_key] - total_used[group_key]
             print(f"   {group_key}: {available}/{total_capacity[group_key]} available ({total_used[group_key]} used)")
         
-        # DIAGNOSTIC: Check distances for first few dogs with placeholder filtering
-        print(f"\n🔍 DIAGNOSTIC: Distance check for first 3 dogs (with 100.0 filtering)...")
-        print(f"   📏 Thresholds: Perfect match ≤0.2mi, Adjacent groups scale with radius (50% of radius)")
+        # DIAGNOSTIC: Check distances for first few dogs with 1.5 mile compatibility
+        print(f"\n🔍 DIAGNOSTIC: Distance check for first 3 dogs (with 1.5mi compatibility)...")
+        print(f"   📏 Thresholds: Exact match ≤1.5mi, Adjacent groups ≤1.125mi")
         
         # Group current assignments by driver to see all options
         drivers_dogs = {}
@@ -642,7 +637,7 @@ class DogReassignmentSystem:
                 
                 for dog_assignment in dogs:
                     distance = self.get_distance(callout_dog['dog_id'], dog_assignment['dog_id'])
-                    if distance < closest_distance and distance != float('inf'):  # Skip filtered placeholders
+                    if distance < closest_distance and distance < 100:  # Skip obvious placeholders
                         closest_distance = distance
                         closest_dog = dog_assignment
                 
@@ -656,19 +651,19 @@ class DogReassignmentSystem:
             
             # Sort drivers by distance and show closest 5
             sorted_drivers = sorted(driver_distances.items(), key=lambda x: x[1]['distance'])
-            print(f"     Closest drivers by distance (placeholders filtered):")
+            print(f"     Closest drivers by distance (with 1.5mi compatibility):")
             for j, (driver, info) in enumerate(sorted_drivers[:5]):
-                group_compat = self.check_group_compatibility(callout_dog['needed_groups'], info['groups'], info['distance'], 0.7)
+                group_compat = self.check_group_compatibility(callout_dog['needed_groups'], info['groups'], info['distance'])
                 print(f"       {j+1}. {driver} - {info['distance']:.3f}mi via {info['via_dog']} (groups: {info['groups']}, compatible: {group_compat})")
                 
-                # Special highlight for Leen since user mentioned Ozzy/Wyatt
-                if driver == 'Leen':
-                    print(f"          🎯 LEEN FOUND! Distance to {info['via_dog']} ({info['via_dog_id']})")
+                # Special highlight for close and compatible options
+                if group_compat and info['distance'] <= 1.0:
+                    print(f"          ✅ VIABLE OPTION! Distance: {info['distance']:.3f}mi")
             
             if not sorted_drivers:
-                print(f"     ❌ No realistic distances found (all were 100.0 placeholders)")
+                print(f"     ❌ No realistic distances found")
             
-            if i == 0:  # Just show detailed analysis for first dog (Fawkes)
+            if i == 0:  # Just show detailed analysis for first dog
                 break
         
         print(f"\n📍 STEP 1: Direct assignments at ≤{self.PREFERRED_DISTANCE}mi")
@@ -683,8 +678,8 @@ class DogReassignmentSystem:
                 driver = assignment['driver']
                 distance = self.get_distance(callout_dog['dog_id'], assignment['dog_id'])
                 
-                # Skip if filtered placeholder
-                if distance == float('inf'):
+                # Skip obvious placeholders
+                if distance >= 100.0:
                     continue
                 
                 # Check group compatibility with distance requirements
@@ -761,8 +756,8 @@ class DogReassignmentSystem:
                     driver = assignment['driver']
                     distance = self.get_distance(callout_dog['dog_id'], assignment['dog_id'])
                     
-                    # Skip if filtered placeholder
-                    if distance == float('inf'):
+                    # Skip obvious placeholders
+                    if distance >= 100.0:
                         continue
                     
                     # Check group compatibility
@@ -848,13 +843,13 @@ class DogReassignmentSystem:
             
             print(f"   📊 Step 2 results: {len(dogs_assigned_step2)} assignments with {len([m for m in moves_made if 'free_space' in m['reason']])} cascading moves")
         
-        # Step 3: Incremental radius expansion (0.3 to 0.7 miles)
+        # Step 3+: Incremental radius expansion (0.3 to 1.5 miles)
         current_radius = 0.3
         step_number = 3
         
         while current_radius <= self.ABSOLUTE_MAX_DISTANCE and dogs_remaining:
             print(f"\n📏 STEP {step_number}: Radius expansion to ≤{current_radius}mi")
-            print(f"   🎯 Thresholds: Perfect match ≤{current_radius}mi, Adjacent groups ≤{current_radius*0.5:.1f}mi")
+            print(f"   🎯 Thresholds: Perfect match ≤{current_radius}mi, Adjacent groups ≤{current_radius*0.75:.2f}mi")
             
             dogs_assigned_this_radius = []
             
@@ -867,8 +862,8 @@ class DogReassignmentSystem:
                     driver = assignment['driver']
                     distance = self.get_distance(callout_dog['dog_id'], assignment['dog_id'])
                     
-                    # Skip if filtered placeholder
-                    if distance == float('inf'):
+                    # Skip obvious placeholders
+                    if distance >= 100.0:
                         continue
                     
                     if distance > current_radius:
@@ -935,7 +930,7 @@ class DogReassignmentSystem:
                     })
                     
                     dogs_assigned_this_radius.append(callout_dog)
-                    print(f"   ✅ {callout_dog['dog_name']} → {driver} ({distance:.1f}mi)")
+                    print(f"   ✅ {callout_dog['dog_name']} → {driver} ({distance:.1f}mi) [{quality}]")
                 
                 else:
                     # Try cascading moves at current radius
@@ -945,8 +940,8 @@ class DogReassignmentSystem:
                         driver = assignment['driver']
                         distance = self.get_distance(callout_dog['dog_id'], assignment['dog_id'])
                         
-                        # Skip if filtered placeholder
-                        if distance == float('inf'):
+                        # Skip obvious placeholders
+                        if distance >= 100.0:
                             continue
                         
                         if distance > current_radius:
@@ -1033,7 +1028,7 @@ class DogReassignmentSystem:
                             })
                             
                             dogs_assigned_this_radius.append(callout_dog)
-                            print(f"   ✅ {callout_dog['dog_name']} → {driver} ({distance:.1f}mi)")
+                            print(f"   ✅ {callout_dog['dog_name']} → {driver} ({distance:.1f}mi) [{quality}]")
                             print(f"      🚶 Moved {move_result['moved_dog']['dog_name']}: {move_result['from_driver']} → {move_result['to_driver']}")
             
             # Remove assigned dogs
@@ -1045,13 +1040,10 @@ class DogReassignmentSystem:
             current_radius += 0.1
             step_number += 1
         
-        # Step 4: Onion-layer backflow (if dogs still remain)
+        # Final step: Mark remaining as emergency
         if dogs_remaining:
-            print(f"\n🧅 STEP {step_number}: Onion-layer backflow for {len(dogs_remaining)} remaining dogs")
-            print("   🔄 Attempting to push outer assignments further out to create inner space")
+            print(f"\n🚨 FINAL STEP: {len(dogs_remaining)} remaining dogs marked as EMERGENCY")
             
-            # TODO: Implement onion-layer backflow if needed
-            # For now, mark remaining as emergency
             for callout_dog in dogs_remaining:
                 assignment_record = {
                     'dog_id': callout_dog['dog_id'],
@@ -1074,27 +1066,27 @@ class DogReassignmentSystem:
         backup_count = len([a for a in assignments_made if a['quality'] == 'BACKUP'])
         emergency_count = len([a for a in assignments_made if a['quality'] == 'EMERGENCY'])
         
-        print(f"\n🏆 LOCALITY-FIRST ALGORITHM RESULTS (with 100.0 filtering):")
+        print(f"\n🏆 LOCALITY-FIRST ALGORITHM RESULTS (with 1.5mi range + 75% adjacent):")
         print(f"   📊 {len(assignments_made)}/{total_dogs} dogs processed")
         print(f"   💚 {good_count} GOOD assignments (≤{self.PREFERRED_DISTANCE}mi)")
         print(f"   🟡 {backup_count} BACKUP assignments ({self.PREFERRED_DISTANCE}-{self.MAX_DISTANCE}mi)")
         print(f"   🚨 {emergency_count} EMERGENCY assignments (>{self.MAX_DISTANCE}mi)")
         print(f"   🚶 {len(moves_made)} cascading moves executed")
         print(f"   🎯 Success rate: {(good_count + backup_count)/total_dogs*100:.0f}% practical assignments")
-        print(f"   🎯 Placeholder filtering: All 100.0 distances ignored for realistic assignments")
+        print(f"   🎯 Extended range: Exact matches ≤1.5mi, Adjacent groups ≤1.125mi")
         
         return assignments_made
 
     def reassign_dogs_multi_strategy_optimization(self):
-        """NEW: Locality-first algorithm with 100.0 placeholder filtering"""
+        """Locality-first algorithm with 1.5 mile range and 75% adjacent threshold"""
         print("\n🔄 Starting LOCALITY-FIRST ASSIGNMENT SYSTEM...")
         print("🎯 Strategy: Proximity-first with cascading moves")
         print("📊 Quality: GOOD ≤0.2mi, BACKUP ≤0.5mi, EMERGENCY >0.5mi")
         print("🚨 Focus: Immediate proximity with dynamic space optimization")
-        print("🎯 FILTERING: 100.0 placeholders ignored for realistic distance calculations")
+        print("🎯 EXTENDED RANGE: Up to 1.5mi exact matches, 1.125mi adjacent matches")
         print("=" * 80)
         
-        # Try the locality-first algorithm with placeholder filtering
+        # Try the locality-first algorithm with extended range
         try:
             return self.locality_first_assignment()
         except Exception as e:
@@ -1261,18 +1253,18 @@ class DogReassignmentSystem:
             print(f"\n📤 Writing {len(updates)} updates to Google Sheets...")
             worksheet.batch_update(updates)
             
-            success_msg = f"✅ Successfully updated {updates_count} assignments with 100.0 placeholder filtering!"
+            success_msg = f"✅ Successfully updated {updates_count} assignments with 1.5mi range + 75% adjacent!"
             if hasattr(self, 'greedy_moves_made') and self.greedy_moves_made:
                 success_msg += f" (including {len(self.greedy_moves_made)} cascading moves)"
             
             print(success_msg)
-            print(f"🎯 Used locality-first algorithm with realistic distance filtering")
+            print(f"🎯 Used locality-first algorithm with extended range")
             
             # Send Slack notification
             slack_webhook = os.environ.get('SLACK_WEBHOOK_URL')
             if slack_webhook:
                 try:
-                    message = f"🐕 Dog Reassignment Complete: {updates_count} assignments updated using 100.0 placeholder filtering"
+                    message = f"🐕 Dog Reassignment Complete: {updates_count} assignments updated using 1.5mi range + 75% adjacent threshold"
                     slack_message = {"text": message}
                     response = requests.post(slack_webhook, json=slack_message, timeout=10)
                     if response.status_code == 200:
@@ -1291,14 +1283,14 @@ class DogReassignmentSystem:
 
 def main():
     """Main function to run the dog reassignment system"""
-    print("🚀 Enhanced Dog Reassignment System - LOCALITY-FIRST WITH 100.0 FILTERING")
+    print("🚀 Enhanced Dog Reassignment System - LOCALITY-FIRST WITH 1.5 MILE RANGE")
     print("🎯 NEW: Proximity-first assignment with dynamic cascading moves")
-    print("📏 Starts at 0.2mi, expands to 0.7mi in 0.1mi increments")
-    print("🔄 Adjacent groups scale with radius (50% of current radius)")
+    print("📏 Starts at 0.2mi, expands to 1.5mi in 0.1mi increments")
+    print("🔄 Adjacent groups: 75% of current radius (more generous)")
     print("🚶 Cascading moves up to 0.5mi to free space dynamically")
     print("🧅 Onion-layer backflow pushes outer assignments out to create inner space")
     print("📊 Quality: GOOD ≤0.2mi, BACKUP ≤0.5mi, EMERGENCY >0.5mi")
-    print("🎯 FILTERING: 100.0 placeholder distances ignored for realistic calculations")
+    print("🎯 EXTENDED RANGE: Exact matches ≤1.5mi, Adjacent groups ≤1.125mi")
     print("=" * 80)
     
     # Initialize system
@@ -1324,7 +1316,7 @@ def main():
         print("❌ Failed to load driver capacities")
         return
     
-    # Run the locality-first assignment with 100.0 filtering
+    # Run the locality-first assignment with extended range
     print("\n🔄 Processing callout assignments...")
     
     reassignments = system.reassign_dogs_multi_strategy_optimization()
@@ -1338,7 +1330,7 @@ def main():
         write_success = system.write_results_to_sheets(reassignments)
         if write_success:
             print(f"\n🎉 SUCCESS! Processed {len(reassignments)} callout assignments")
-            print(f"✅ Used locality-first algorithm with 100.0 placeholder filtering")
+            print(f"✅ Used locality-first algorithm with 1.5mi range + 75% adjacent threshold")
         else:
             print(f"\n❌ Failed to write {len(reassignments)} results to Google Sheets")
     else:
