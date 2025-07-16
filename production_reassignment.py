@@ -315,13 +315,22 @@ class DogReassignmentSystem:
         return dogs_to_reassign
 
     def _extract_groups_for_capacity_check(self, assignment_string):
-        """Extract group numbers for capacity checking - each digit 1,2,3 is a separate group"""
+        """Extract group numbers for capacity checking - each digit 1,2,3 is a separate group
+        
+        Examples:
+        - "1&2" → [1, 2] (counts +1 in group1, +1 in group2)
+        - "123" → [1, 2, 3] (counts +1 in each group)
+        - "3DD1" → [3] (ignores DD1, just group 3)
+        - "1&2&3" → [1, 2, 3] (all three groups)
+        """
         try:
             # Extract all digits that are 1, 2, or 3 from the string
             group_digits = re.findall(r'[123]', assignment_string)
             
             # Convert each digit to an integer and remove duplicates
             groups = sorted(list(set(int(digit) for digit in group_digits)))
+            
+            print("     🔍 GROUP PARSING: '" + str(assignment_string) + "' → groups " + str(groups))
             
             return groups
             
