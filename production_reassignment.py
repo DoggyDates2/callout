@@ -1,5 +1,6 @@
+
 # production_reassignment.py
-# COMPLETE WORKING VERSION: Locality-first with strategic cascading and 1.5 mile range (MINIMAL CHANGES)
+# COMPLETE WORKING VERSION: Locality-first with strategic cascading and 1.5 mile range
 
 import pandas as pd
 import numpy as np
@@ -528,16 +529,14 @@ class DogReassignmentSystem:
                 best_target = targets[0]
                 
                 # Execute the move
-                old_driver = None
                 for assignment in current_assignments:
                     if assignment['dog_id'] == dog_to_move['dog_id']:
-                        old_driver = assignment['driver']
                         assignment['driver'] = best_target['driver']
                         break
                 
                 return {
                     'moved_dog': dog_to_move,
-                    'from_driver': old_driver,
+                    'from_driver': dog_to_move.get('driver'),
                     'to_driver': best_target['driver'],
                     'distance': best_target['distance'],
                     'via_dog': best_target['via_dog'],
@@ -602,6 +601,108 @@ class DogReassignmentSystem:
                 })
         
         # Sort by distance (closest first)
+        return sorted(targets, key=lambda x: x['distance'])
+
+    # ========== LEGACY CASCADING METHOD (KEPT FOR FALLBACK) ==========
+
+    def attempt_cascading_move(self, blocked_driver, callout_dog, current_assignments, max_cascade_distance):
+        """LEGACY: Attempt to free space in blocked_driver by moving one of their dogs"""
+        print(f"🔄 ATTEMPTING LEGACY CASCADING MOVE for {callout_dog['dog_name']} → {blocked_driver}")
+        print(f"   Need to free space in {blocked_driver} for groups {callout_dog['needed_groups']}")
+        
+        driver_dogs = self.get_current_driver_dogs(blocked_driver, current_assignments)
+        print(f"   {blocked_driver} currently has {len(driver_dogs)} dogs assigned")
+        
+        # Show current load for this driver
+        current_load = self.calculate_driver_load(blocked_driver, current_assignments)
+        driver_capacity = self.driver_capacities.get(blocked_driver, {})
+        print(f"   {blocked_driver} capacity: ***{driver_capacity}***")
+        print(f"   {blocked_driver} current load: ***{current_load}***")
+        
+        # Try to move each dog, starting with single-group dogs (easier to place)
+        move_candidates = sorted(driver_dogs, key=lambda x: (len(x.get('needed_groups', [])), x.get('num_dogs', 1)))
+        print(f"   Trying to move {len(move_candidates)} dogs (easiest first):")
+        
+        for i, dog_to_move in enumerate(move_candidates):
+            print(f"     {i+1}. {dog_to_move['dog_name']} ({dog_to_move['dog_id']}) - groups {dog_to_move['needed_groups']}, {dog_to_move['num_dogs']} dogs")
+            
+            # Find targets for this dog within cascade distance
+            targets = self.find_move_targets_for_dog(dog_to_move, current_assignments, max_cascade_distance)
+            print(f"        Found {len(targets)} potential targets within {max_cascade_distance}mi:")
+            
+            for j, target in enumerate(targets[:3]):  # Show top 3 targets
+                print(f"          {j+1}. {target['driver']} - {target['distance']:.3f}mi via {target['via_dog']}")
+            
+            if targets:
+                best_target = targets[0]
+                print(f"        ✅ EXECUTING MOVE: {dog_to_move['dog_name']} from {blocked_driver} → {best_target['driver']}")
+                
+                # Execute the move
+                for assignment in current_assignments:
+                    if assignment['dog_id'] == dog_to_move['dog_id']:
+                        assignment['driver'] = best_target['driver']
+                        break
+                
+                return {
+                    'moved_dog': dog_to_move,
+                    'from_driver': blocked_driver,
+                    'to_driver': best_target['driver'],
+                    'distance': best_target['distance'],
+                    'via_dog': best_target['via_dog']
+                }
+            else:
+                print(f"        ❌ No targets found for {dog_to_move['dog_name']}")
+        
+        print(f"   ❌ CASCADING MOVE FAILED - no dogs could be relocated")
+        return None
+
+    def find_move_targets_for_dog(self, dog_to_move, current_assignments, max_distance):
+        """Find potential drivers within range who can accept a dog"""
+        targets = []
+        
+        for assignment in current_assignments:
+            target_driver = assignment['driver']
+            
+            # Skip same driver
+            if target_driver == dog_to_move.get('driver'):
+                continue
+            
+            # Calculate distance
+            distance = self.get_distance(dog_to_move['dog_id'], assignment['dog_id'])
+            
+            # Check group compatibility
+            dog_groups = dog_to_move.get('needed_groups', [])
+            target_groups = assignment.get('needed_groups', [])
+            
+            if not self.check_group_compatibility(dog_groups, target_groups, distance, max_distance):
+                continue
+            
+            if distance > max_distance:
+                continue
+            
+            # Check if target driver has capacity
+            target_load = self.calculate_driver_load(target_driver, current_assignments)
+            target_capacity = self.driver_capacities.get(target_driver, {})
+            
+            can_accept = True
+            for group in dog_groups:
+                group_key = f'group{group}'
+                current = target_load.get(group_key, 0)
+                max_cap = target_capacity.get(group_key, 0)
+                needed = dog_to_move.get('num_dogs', 1)
+                
+                if current + needed > max_cap:
+                    can_accept = False
+                    break
+            
+            if can_accept:
+                targets.append({
+                    'driver': target_driver,
+                    'distance': distance,
+                    'via_dog': assignment['dog_name'],
+                    'via_dog_id': assignment['dog_id']
+                })
+        
         return sorted(targets, key=lambda x: x['distance'])
 
     # ========== MAIN LOCALITY-FIRST ALGORITHM ==========
@@ -906,6 +1007,19 @@ class DogReassignmentSystem:
                             'reason': f"strategic_free_space_for_{callout_dog['dog_name']}"
                         })
                         
+                        # 🎯 CRITICAL FIX: Update any existing assignments for moved dog
+                        moved_dog_id = move_result['moved_dog']['dog_id']
+                        for existing_assignment in assignments_made:
+                            if existing_assignment['dog_id'] == moved_dog_id:
+                                # Update the assignment to show final location
+                                old_driver = existing_assignment['driver']
+                                new_driver = move_result['to_driver']
+                                existing_assignment['driver'] = new_driver
+                                existing_assignment['new_assignment'] = existing_assignment['new_assignment'].replace(f"{old_driver}:", f"{new_driver}:")
+                                existing_assignment['assignment_type'] = 'moved_by_strategic_cascading'
+                                print(f"      🔄 Updated final assignment: {move_result['moved_dog']['dog_name']} → {new_driver}")
+                                break
+                        
                         # Now assign the callout dog to the freed space
                         driver = best_blocked['driver']
                         distance = best_blocked['distance']
@@ -1197,7 +1311,7 @@ class DogReassignmentSystem:
             return []
 
     def write_results_to_sheets(self, reassignments):
-        """Write reassignment results and greedy walk moves back to Google Sheets with move tracking"""
+        """Write reassignment results and greedy walk moves back to Google Sheets"""
         try:
             print(f"\n📝 Writing {len(reassignments)} results to Google Sheets...")
             
@@ -1265,24 +1379,18 @@ class DogReassignmentSystem:
             header_row = all_data[0]
             print(f"📋 Sheet has {len(all_data)} rows")
             
-            # Find the Dog ID column and Callout column
+            # Find the Dog ID column
             dog_id_col = None
-            callout_col = None
             for i, header in enumerate(header_row):
                 header_clean = str(header).lower().strip()
                 if 'dog id' in header_clean:
                     dog_id_col = i
                     print(f"📍 Found Dog ID column at index {i}")
-                elif 'callout' in header_clean:
-                    callout_col = i
-                    print(f"📍 Found Callout column at index {i}")
+                    break
             
             if dog_id_col is None:
                 print("❌ Could not find 'Dog ID' column")
                 return False
-            
-            if callout_col is None:
-                print("⚠️ Could not find 'Callout' column - will skip move tracking")
             
             # Target Column H (Combined column) - index 7
             target_col = 7  
@@ -1294,27 +1402,7 @@ class DogReassignmentSystem:
             
             print(f"\n🔍 Processing {len(reassignments)} reassignments...")
             
-            # Build a map of moves for tracking original assignments
-            moved_dogs_original = {}
-            if hasattr(self, 'greedy_moves_made') and self.greedy_moves_made:
-                print(f"📋 Building move tracking map from {len(self.greedy_moves_made)} moves...")
-                for move in self.greedy_moves_made:
-                    moved_dog_id = move.get('dog_id', '')
-                    from_driver = move.get('from_driver', '')
-                    
-                    # Find what this dog was originally assigned to
-                    for assignment in reassignments:
-                        if assignment.get('dog_id') == moved_dog_id:
-                            current_assignment = assignment.get('new_assignment', '')
-                            if ':' in current_assignment:
-                                # Reconstruct original assignment
-                                assignment_part = current_assignment.split(':', 1)[1]
-                                original_assignment = f"{from_driver}:{assignment_part}"
-                                moved_dogs_original[moved_dog_id] = original_assignment
-                                print(f"   📋 {moved_dog_id}: Original={original_assignment} → Final={current_assignment}")
-                            break
-            
-            # Process reassignments with move tracking
+            # Process reassignments
             for assignment in reassignments:
                 dog_id = str(assignment.get('dog_id', '')).strip()
                 new_assignment = str(assignment.get('new_assignment', '')).strip()
@@ -1330,26 +1418,48 @@ class DogReassignmentSystem:
                         current_dog_id = str(all_data[row_idx][dog_id_col]).strip()
                         
                         if current_dog_id == dog_id:
-                            # Always update Column H (Combined) with final assignment
-                            cell_address_h = gspread.utils.rowcol_to_a1(row_idx + 1, target_col + 1)
+                            cell_address = gspread.utils.rowcol_to_a1(row_idx + 1, target_col + 1)
+                            
                             updates.append({
-                                'range': cell_address_h,
+                                'range': cell_address,
                                 'values': [[new_assignment]]
                             })
-                            updates_count += 1
                             
-                            # For moved dogs, also update Column K (Callout) with original assignment
-                            if dog_id in moved_dogs_original and callout_col is not None:
-                                original_assignment = moved_dogs_original[dog_id]
-                                cell_address_k = gspread.utils.rowcol_to_a1(row_idx + 1, callout_col + 1)
-                                updates.append({
-                                    'range': cell_address_k,
-                                    'values': [[original_assignment]]
-                                })
-                                print(f"  🎯 {dog_id} → Column H: {new_assignment} | Column K: {original_assignment} (tracking move)")
-                            else:
-                                print(f"  ✅ {dog_id} → {new_assignment}")
+                            updates_count += 1
+                            print(f"  ✅ {dog_id} → {new_assignment}")
                             break
+            
+            # Process strategic cascading moves if any
+            if hasattr(self, 'greedy_moves_made') and self.greedy_moves_made:
+                print(f"\n🔍 Processing {len(self.greedy_moves_made)} strategic cascading moves...")
+                
+                for move in self.greedy_moves_made:
+                    dog_id = str(move.get('dog_id', '')).strip()
+                    from_driver = move.get('from_driver', '')
+                    to_driver = move.get('to_driver', '')
+                    
+                    # Find current assignment for this dog and update driver
+                    for row_idx in range(1, len(all_data)):
+                        if dog_id_col < len(all_data[row_idx]):
+                            current_dog_id = str(all_data[row_idx][dog_id_col]).strip()
+                            
+                            if current_dog_id == dog_id:
+                                # Get current assignment and update driver
+                                current_combined = str(all_data[row_idx][target_col]).strip()
+                                if ':' in current_combined:
+                                    assignment_part = current_combined.split(':', 1)[1]
+                                    new_combined = f"{to_driver}:{assignment_part}"
+                                    
+                                    cell_address = gspread.utils.rowcol_to_a1(row_idx + 1, target_col + 1)
+                                    
+                                    updates.append({
+                                        'range': cell_address,
+                                        'values': [[new_combined]]
+                                    })
+                                    
+                                    print(f"  🎯 {dog_id} strategic move: {from_driver} → {to_driver}")
+                                    updates_count += 1
+                                break
             
             if not updates:
                 print("❌ No valid updates to make")
@@ -1359,15 +1469,13 @@ class DogReassignmentSystem:
             print(f"\n📤 Writing {len(updates)} updates to Google Sheets...")
             worksheet.batch_update(updates)
             
-            moved_dogs_count = len([d for d in moved_dogs_original.keys() if d])
             success_msg = f"✅ Successfully updated {updates_count} assignments with strategic cascading!"
-            if moved_dogs_count > 0:
-                success_msg += f" (including {moved_dogs_count} dogs with move tracking)"
+            if hasattr(self, 'greedy_moves_made') and self.greedy_moves_made:
+                strategic_moves = len([m for m in self.greedy_moves_made if 'strategic' in m['reason']])
+                success_msg += f" (including {strategic_moves} strategic cascading moves)"
             
             print(success_msg)
             print(f"🎯 Used locality-first + strategic cascading with 1.5mi range + 75% adjacent")
-            if moved_dogs_count > 0:
-                print(f"📋 Moved dogs: Original assignment in Column K, final location in Column H")
             
             # Send Slack notification
             slack_webhook = os.environ.get('SLACK_WEBHOOK_URL')
@@ -1401,7 +1509,6 @@ def main():
     print("🧅 Onion-layer backflow pushes outer assignments out to create inner space")
     print("📊 Quality: GOOD ≤0.2mi, BACKUP ≤0.5mi, EMERGENCY >0.5mi")
     print("🎯 EXTENDED RANGE: Exact matches ≤1.5mi, Adjacent groups ≤1.125mi")
-    print("📋 TRACKING: Moved dogs show original assignment in Column K, final in Column H")
     print("=" * 80)
     
     # Initialize system
@@ -1450,3 +1557,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
