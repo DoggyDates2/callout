@@ -1,6 +1,5 @@
 # production_reassignment.py
-# COMPREHENSIVE CAPACITY FIX: ALL assignment paths now use safe validation
-# 🛡️ GUARANTEED: No driver can be over-assigned through ANY path
+# COMPLETE WORKING VERSION: Locality-first with strategic cascading and 1.5 mile range
 
 import pandas as pd
 import numpy as np
@@ -67,7 +66,7 @@ class DogReassignmentSystem:
             return True
             
         except Exception as e:
-            print("❌ Error setting up Google Sheets client: " + str(e))
+            print(f"❌ Error setting up Google Sheets client: {e}")
             return False
 
     def load_distance_matrix(self):
@@ -83,22 +82,22 @@ class DogReassignmentSystem:
             from io import StringIO
             df = pd.read_csv(StringIO(response.text), index_col=0)
             
-            print("📊 Distance matrix shape: (" + str(len(df)) + ", " + str(len(df.columns)) + ")")
+            print(f"📊 Distance matrix shape: ({len(df)}, {len(df.columns)})")
             
             # Extract dog IDs from columns (skip non-dog columns)
             dog_ids = [col for col in df.columns if 'x' in str(col).lower()]
-            print("📊 Found " + str(len(dog_ids)) + " column Dog IDs")
+            print(f"📊 Found {len(dog_ids)} column Dog IDs")
             
             # Filter to only dog ID columns and rows
             dog_df = df.loc[df.index.isin(dog_ids), dog_ids]
             
             self.distance_matrix = dog_df
-            print("✅ Loaded distance matrix for " + str(len(self.distance_matrix)) + " dogs")
+            print(f"✅ Loaded distance matrix for {len(self.distance_matrix)} dogs")
             
             return True
             
         except Exception as e:
-            print("❌ Error loading distance matrix: " + str(e))
+            print(f"❌ Error loading distance matrix: {e}")
             return False
 
     def load_dog_assignments(self):
@@ -114,8 +113,8 @@ class DogReassignmentSystem:
             from io import StringIO
             df = pd.read_csv(StringIO(response.text))
             
-            print("📊 Map sheet shape: (" + str(len(df)) + ", " + str(len(df.columns)) + ")")
-            print("🔍 DEBUG: First few column names: " + str(list(df.columns[:15])))
+            print(f"📊 Map sheet shape: ({len(df)}, {len(df.columns)})")
+            print(f"🔍 DEBUG: First few column names: {list(df.columns[:15])}")
             
             assignments = []
             
@@ -131,7 +130,7 @@ class DogReassignmentSystem:
                     
                     # Debug first few rows
                     if i < 10:
-                        print("🔍 Row " + str(i) + ": DogName=\"" + str(dog_name) + "\", Combined=\"" + str(combined) + "\", DogID=\"" + str(dog_id) + "\", Callout=\"" + str(callout) + "\"")
+                        print(f"🔍 Row {i}: DogName='{dog_name}', Combined='{combined}', DogID='{dog_id}', Callout='{callout}'")
                     
                     # Skip rows without dog IDs
                     if not dog_id or pd.isna(dog_id):
@@ -154,16 +153,16 @@ class DogReassignmentSystem:
                     })
                     
                 except Exception as e:
-                    print("⚠️ Error processing row " + str(i) + ": " + str(e))
+                    print(f"⚠️ Error processing row {i}: {e}")
                     continue
             
             self.dog_assignments = assignments
-            print("✅ Loaded " + str(len(assignments)) + " regular assignments")
+            print(f"✅ Loaded {len(assignments)} regular assignments")
             
             return True
             
         except Exception as e:
-            print("❌ Error loading dog assignments: " + str(e))
+            print(f"❌ Error loading dog assignments: {e}")
             return False
 
     def load_driver_capacities(self):
@@ -212,29 +211,12 @@ class DogReassignmentSystem:
                     continue
             
             self.driver_capacities = capacities
-            print("✅ Loaded capacities for " + str(len(capacities)) + " drivers")
-            
-            # Debug: Show first few driver capacities and check for Sara specifically
-            if capacities:
-                print("🔍 DEBUG: Sample driver capacities:")
-                for i, (driver, caps) in enumerate(list(capacities.items())[:3]):
-                    print("   '" + str(driver) + "': ***" + str(caps) + "***")
-                
-                # Specifically check for Sara since that's the failing driver
-                if 'Sara' in capacities:
-                    print("🔍 DEBUG: Found Sara capacity: ***" + str(capacities['Sara']) + "***")
-                else:
-                    print("🚨 DEBUG: Sara not found in capacities!")
-                    sara_like = [d for d in capacities.keys() if 'sara' in str(d).lower()]
-                    if sara_like:
-                        print("   📋 Sara-like drivers found: " + str(sara_like))
-                    else:
-                        print("   📋 No Sara-like drivers found")
+            print(f"✅ Loaded capacities for {len(capacities)} drivers")
             
             return True
             
         except Exception as e:
-            print("❌ Error loading driver capacities: " + str(e))
+            print(f"❌ Error loading driver capacities: {e}")
             return False
 
     def get_dogs_to_reassign(self):
@@ -244,7 +226,7 @@ class DogReassignmentSystem:
         if not self.dog_assignments:
             return dogs_to_reassign
         
-        print("🔍 DEBUG: Checking " + str(len(self.dog_assignments)) + " total assignments for callouts...")
+        print(f"🔍 DEBUG: Checking {len(self.dog_assignments)} total assignments for callouts...")
         
         callout_candidates = 0
         filtered_out = 0
@@ -254,7 +236,7 @@ class DogReassignmentSystem:
         for i, assignment in enumerate(self.dog_assignments):
             # Debug first few and last few
             if i < 5 or i >= len(self.dog_assignments) - 5:
-                print("   Row " + str(i) + ": ID=" + str(assignment.get('dog_id', 'MISSING')) + ", Combined=\"" + str(assignment.get('combined', 'MISSING')) + "\", Callout=\"" + str(assignment.get('callout', 'MISSING')) + "\"")
+                print(f"   Row {i}: ID={assignment.get('dog_id', 'MISSING')}, Combined='{assignment.get('combined', 'MISSING')}', Callout='{assignment.get('callout', 'MISSING')}'")
             
             # Check for callout: Combined column blank AND Callout column has content
             combined_blank = (not assignment['combined'] or assignment['combined'].strip() == "")
@@ -266,7 +248,7 @@ class DogReassignmentSystem:
                 # FILTER OUT NON-DOGS: Skip Parking, Field, and other administrative entries
                 dog_name = str(assignment.get('dog_name', '')).lower().strip()
                 if any(keyword in dog_name for keyword in ['parking', 'field', 'admin', 'office']):
-                    print("   ⏭️ Skipping non-dog entry: " + str(assignment['dog_name']) + " (" + str(assignment['dog_id']) + ")")
+                    print(f"   ⏭️ Skipping non-dog entry: {assignment['dog_name']} ({assignment['dog_id']})")
                     filtered_out += 1
                     continue
                 
@@ -274,7 +256,7 @@ class DogReassignmentSystem:
                 callout_text = assignment['callout'].strip()
                 
                 if ':' not in callout_text:
-                    print("   ⚠️ No colon in callout for " + str(assignment.get('dog_id', 'UNKNOWN')) + ": \"" + str(callout_text) + "\"")
+                    print(f"   ⚠️ No colon in callout for {assignment.get('dog_id', 'UNKNOWN')}: '{callout_text}'")
                     no_colon += 1
                     continue
                 
@@ -295,35 +277,28 @@ class DogReassignmentSystem:
                         'original_driver': original_driver
                     })
                 else:
-                    print("   ⚠️ No groups found for " + str(assignment.get('dog_id', 'UNKNOWN')) + ": \"" + str(full_assignment_string) + "\"")
+                    print(f"   ⚠️ No groups found for {assignment.get('dog_id', 'UNKNOWN')}: '{full_assignment_string}'")
                     no_groups += 1
         
-        print("🔍 DEBUG SUMMARY:")
-        print("   📊 Total assignments checked: " + str(len(self.dog_assignments)))
-        print("   🎯 Callout candidates (blank combined + has callout): " + str(callout_candidates))
-        print("   🚫 Filtered out (non-dogs): " + str(filtered_out))
-        print("   ⚠️ No colon in callout: " + str(no_colon))
-        print("   ⚠️ No groups extracted: " + str(no_groups))
-        print("   ✅ Final dogs to reassign: " + str(len(dogs_to_reassign)))
+        print(f"🔍 DEBUG SUMMARY:")
+        print(f"   📊 Total assignments checked: {len(self.dog_assignments)}")
+        print(f"   🎯 Callout candidates (blank combined + has callout): {callout_candidates}")
+        print(f"   🚫 Filtered out (non-dogs): {filtered_out}")
+        print(f"   ⚠️ No colon in callout: {no_colon}")
+        print(f"   ⚠️ No groups extracted: {no_groups}")
+        print(f"   ✅ Final dogs to reassign: {len(dogs_to_reassign)}")
         
-        print("\n🚨 Found " + str(len(dogs_to_reassign)) + " REAL dogs that need drivers assigned:")
+        print(f"\n🚨 Found {len(dogs_to_reassign)} REAL dogs that need drivers assigned:")
         for dog in dogs_to_reassign:
-            print("   - " + str(dog['dog_name']) + " (" + str(dog['dog_id']) + ") - " + str(dog['num_dogs']) + " dogs")
-            print("     Original: " + str(dog['original_callout']))
-            print("     Assignment string: \"" + str(dog['full_assignment_string']) + "\"")
-            print("     Capacity needed in groups: " + str(dog['needed_groups']))
+            print(f"   - {dog['dog_name']} ({dog['dog_id']}) - {dog['num_dogs']} dogs")
+            print(f"     Original: {dog['original_callout']}")  
+            print(f"     Assignment string: '{dog['full_assignment_string']}'")
+            print(f"     Capacity needed in groups: {dog['needed_groups']}")
         
         return dogs_to_reassign
 
     def _extract_groups_for_capacity_check(self, assignment_string):
-        """Extract group numbers for capacity checking - each digit 1,2,3 is a separate group
-        
-        Examples:
-        - "1&2" → [1, 2] (counts +1 in group1, +1 in group2)
-        - "123" → [1, 2, 3] (counts +1 in each group)
-        - "3DD1" → [3] (ignores DD1, just group 3)
-        - "1&2&3" → [1, 2, 3] (all three groups)
-        """
+        """Extract group numbers for capacity checking - each digit 1,2,3 is a separate group"""
         try:
             # Extract all digits that are 1, 2, or 3 from the string
             group_digits = re.findall(r'[123]', assignment_string)
@@ -331,12 +306,10 @@ class DogReassignmentSystem:
             # Convert each digit to an integer and remove duplicates
             groups = sorted(list(set(int(digit) for digit in group_digits)))
             
-            print("     🔍 GROUP PARSING: '" + str(assignment_string) + "' → groups " + str(groups))
-            
             return groups
             
         except Exception as e:
-            print("⚠️ Error extracting groups from \"" + str(assignment_string) + "\": " + str(e))
+            print(f"⚠️ Error extracting groups from '{assignment_string}': {e}")
             return []
 
     def get_distance(self, dog1_id: str, dog2_id: str) -> float:
@@ -358,40 +331,24 @@ class DogReassignmentSystem:
         """Calculate current load for a driver across all groups"""
         load = {'group1': 0, 'group2': 0, 'group3': 0}
         
-        print("🔍 CALCULATING LOAD for driver: '" + str(driver_name) + "'")
-        
         # Use provided assignments or default to original assignments
         assignments_to_use = current_assignments if current_assignments else self.dog_assignments
         
         if not assignments_to_use:
-            print("   ⚠️ No assignments to process")
             return load
         
-        print("   📊 Processing " + str(len(assignments_to_use)) + " assignments")
-        
-        dogs_counted = 0
         for assignment in assignments_to_use:
             if current_assignments:
                 # Working with dynamic assignment list
-                assigned_driver = assignment.get('driver', '')
-                print("   🔍 Checking assignment: driver='" + str(assigned_driver) + "' vs target='" + str(driver_name) + "'")
-                
-                if assigned_driver == driver_name:
+                if assignment.get('driver') == driver_name:
                     # Parse groups for this assignment
                     assigned_groups = assignment.get('needed_groups', [])
-                    num_dogs = assignment.get('num_dogs', 1)
-                    dog_name = assignment.get('dog_name', 'Unknown')
-                    
-                    print("     ✅ MATCH: " + str(dog_name) + " - groups " + str(assigned_groups) + " - count " + str(num_dogs))
                     
                     # Add to load for each group
                     for group in assigned_groups:
-                        group_key = 'group' + str(group)
+                        group_key = f'group{group}'
                         if group_key in load:
-                            load[group_key] += num_dogs
-                            print("       📈 Added " + str(num_dogs) + " to " + str(group_key) + " (now " + str(load[group_key]) + ")")
-                    
-                    dogs_counted += 1
+                            load[group_key] += assignment.get('num_dogs', 1)
             else:
                 # Working with original assignment data
                 combined = assignment.get('combined', '')
@@ -411,13 +368,9 @@ class DogReassignmentSystem:
                         
                         # Add to load for each group
                         for group in assigned_groups:
-                            group_key = 'group' + str(group)
+                            group_key = f'group{group}'
                             if group_key in load:
                                 load[group_key] += assignment['num_dogs']
-                        
-                        dogs_counted += 1
-        
-        print("   📊 FINAL LOAD for '" + str(driver_name) + "': " + str(load) + " (" + str(dogs_counted) + " dogs counted)")
         
         return load
 
@@ -451,191 +404,50 @@ class DogReassignmentSystem:
         # 3. NO MATCH - incompatible groups
         return False
 
-    def check_group_compatibility_for_moves(self, dog_groups, driver_groups, distance, current_radius=None):
-        """STRATEGIC MOVE COMPATIBILITY: More flexible for multi-group dogs"""
-        # Extract unique group numbers from both sets
-        dog_set = set(dog_groups)
-        driver_set = set(driver_groups)
-        
-        # Determine thresholds based on current radius
-        if current_radius is not None:
-            perfect_threshold = current_radius
-            adjacent_threshold = current_radius * 0.75
-        else:
-            perfect_threshold = 1.5
-            adjacent_threshold = 1.125
-        
-        print("       🔍 MOVE COMPATIBILITY: Dog groups " + str(dog_groups) + " → Driver groups " + str(driver_groups))
-        
-        # 1. DIRECT OVERLAP - Any shared group (most flexible)
-        if dog_set.intersection(driver_set):
-            print("       ✅ DIRECT OVERLAP: Shared groups " + str(dog_set.intersection(driver_set)))
-            return distance <= perfect_threshold
-        
-        # 2. MULTI-GROUP FLEXIBILITY
-        # For multi-group dogs, be more flexible about compatibility
-        for dog_group in dog_set:
-            for driver_group in driver_set:
-                compatible = False
-                
-                # Group 1 & 2 are compatible (adjacent)
-                if (dog_group == 1 and driver_group == 2) or (dog_group == 2 and driver_group == 1):
-                    compatible = True
-                    print("       ✅ ADJACENT 1-2: Groups " + str(dog_group) + " & " + str(driver_group))
-                
-                # Group 2 & 3 are compatible (adjacent)  
-                elif (dog_group == 2 and driver_group == 3) or (dog_group == 3 and driver_group == 2):
-                    compatible = True
-                    print("       ✅ ADJACENT 2-3: Groups " + str(dog_group) + " & " + str(driver_group))
-                
-                # Group 1 & 3 are compatible for multi-group flexibility
-                elif (dog_group == 1 and driver_group == 3) or (dog_group == 3 and driver_group == 1):
-                    compatible = True
-                    print("       ✅ MULTI-GROUP FLEX: Groups " + str(dog_group) + " & " + str(driver_group))
-                
-                if compatible:
-                    return distance <= adjacent_threshold
-        
-        print("       ❌ NO COMPATIBILITY: Groups " + str(dog_groups) + " cannot match " + str(driver_groups))
-        return False
-
-    def validate_assignment_capacity(self, driver, callout_dog, current_assignments):
-        """FINAL CAPACITY VALIDATION - Prevents any over-capacity assignments"""
-        print("🔍 VALIDATING CAPACITY for " + str(driver) + " + " + str(callout_dog.get('dog_name', 'Unknown')))
-        
-        current_load = self.calculate_driver_load(driver, current_assignments)
-        driver_capacity = self.driver_capacities.get(driver, {})
-        
-        if not driver_capacity:
-            print("   ⚠️ Driver '" + str(driver) + "' not found in capacity data - ASSIGNMENT BLOCKED!")
-            return False
-        
-        print("   📊 Driver capacity data: " + str(driver_capacity))
-        print("   📊 Current load: " + str(current_load))
-        print("   📊 Needed groups: " + str(callout_dog['needed_groups']))
-        print("   📊 Needed count: " + str(callout_dog['num_dogs']))
-        
-        for group in callout_dog['needed_groups']:
-            group_key = 'group' + str(group)
-            current = current_load.get(group_key, 0)
-            max_cap = driver_capacity.get(group_key, 0)
-            needed = callout_dog['num_dogs']
-            
-            print("   🔢 Group " + str(group) + " (" + str(group_key) + "): " + str(current) + " + " + str(needed) + " vs " + str(max_cap))
-            
-            if current + needed > max_cap:
-                print("🚨 FINAL VALIDATION FAILED: " + str(driver) + " group " + str(group) + ": " + str(current) + " + " + str(needed) + " > " + str(max_cap) + " - ASSIGNMENT BLOCKED!")
-                return False
-            
-        print("✅ FINAL VALIDATION PASSED: " + str(driver) + " can accept " + str(callout_dog.get('dog_name', 'Unknown')))
-        return True
-
     def get_current_driver_dogs(self, driver_name, current_assignments):
         """Get all dogs currently assigned to a specific driver"""
         return [assignment for assignment in current_assignments 
                 if assignment.get('driver') == driver_name]
 
-    def _make_safe_assignment(self, callout_dog, driver, current_assignments, assignment_type="direct", quality="GOOD"):
-        """CENTRALIZED SAFE ASSIGNMENT - All assignments must go through this function"""
-        print(f"🔒 SAFE ASSIGNMENT CHECK: {callout_dog['dog_name']} → {driver}")
-        
-        # CRITICAL: Validate capacity with current state
-        if not self.validate_assignment_capacity(driver, callout_dog, current_assignments):
-            print(f"🚨 SAFE ASSIGNMENT BLOCKED: {driver} failed capacity validation")
-            return False
-        
-        # Make the assignment
-        assignment_record = {
-            'dog_id': callout_dog['dog_id'],
-            'dog_name': callout_dog['dog_name'],
-            'new_assignment': f"{driver}:{callout_dog['full_assignment_string']}",
-            'driver': driver,
-            'distance': 0.0,  # Will be updated by caller
-            'quality': quality,
-            'assignment_type': assignment_type
-        }
-        
-        # CRITICAL: Update current_assignments IMMEDIATELY
-        current_assignments.append({
-            'dog_id': callout_dog['dog_id'],
-            'dog_name': callout_dog['dog_name'],
-            'driver': driver,
-            'needed_groups': callout_dog['needed_groups'],
-            'num_dogs': callout_dog['num_dogs']
-        })
-        
-        print(f"   ✅ SAFE ASSIGNMENT SUCCESS: {callout_dog['dog_name']} → {driver}")
-        print(f"      🔄 State updated immediately - next validation will see this assignment")
-        
-        return assignment_record
-
-    def _make_safe_move(self, dog_to_move, new_driver, current_assignments):
-        """CENTRALIZED SAFE MOVE - All moves must go through this function"""
-        print(f"🔒 SAFE MOVE CHECK: {dog_to_move['dog_name']} → {new_driver}")
-        
-        # Create temp dog for validation
-        temp_dog = {
-            'needed_groups': dog_to_move['needed_groups'],
-            'num_dogs': dog_to_move.get('num_dogs', 1),
-            'dog_name': dog_to_move['dog_name']
-        }
-        
-        # CRITICAL: Validate capacity
-        if not self.validate_assignment_capacity(new_driver, temp_dog, current_assignments):
-            print(f"🚨 SAFE MOVE BLOCKED: {new_driver} failed capacity validation")
-            return False
-        
-        # Execute the move by updating state
-        for assignment in current_assignments:
-            if assignment['dog_id'] == dog_to_move['dog_id']:
-                old_driver = assignment['driver']
-                assignment['driver'] = new_driver
-                print(f"   ✅ SAFE MOVE SUCCESS: {dog_to_move['dog_name']} moved from {old_driver} to {new_driver}")
-                print(f"      🔄 State updated immediately")
-                return True
-        
-        print(f"🚨 SAFE MOVE FAILED: Could not find {dog_to_move['dog_name']} in current assignments")
-        return False
-
     # ========== STRATEGIC CASCADING METHODS ==========
 
     def attempt_strategic_cascading_move(self, blocked_driver, callout_dog, current_assignments, max_search_radius=0.7):
         """STRATEGIC: Target specific groups with incremental radius expansion"""
-        print("🎯 ATTEMPTING STRATEGIC CASCADING MOVE for " + str(callout_dog.get('dog_name', 'Unknown')) + " → " + str(blocked_driver))
+        print(f"🎯 ATTEMPTING STRATEGIC CASCADING MOVE for {callout_dog['dog_name']} → {blocked_driver}")
         
         # Step 1: Identify which groups are causing the capacity problem
         blocked_groups = self._identify_blocked_groups(blocked_driver, callout_dog, current_assignments)
-        print("   🎯 Target groups causing capacity issues: " + str(blocked_groups))
+        print(f"   🎯 Target groups causing capacity issues: {blocked_groups}")
         
         if not blocked_groups:
-            print("   ❌ No blocked groups identified")
+            print(f"   ❌ No blocked groups identified")
             return None
         
         # Step 2: Get dogs from blocked driver, prioritized by strategy
         driver_dogs = self.get_current_driver_dogs(blocked_driver, current_assignments)
         strategic_dogs = self._prioritize_dogs_strategically(driver_dogs, blocked_groups)
         
-        print("   📊 Strategic prioritization of " + str(len(strategic_dogs)) + " dogs:")
+        print(f"   📊 Strategic prioritization of {len(strategic_dogs)} dogs:")
         for i, (priority, dog) in enumerate(strategic_dogs[:8]):  # Show top 8
-            print("     " + str(i+1) + ". " + str(dog.get('dog_name', 'Unknown')) + " (groups: " + str(dog.get('needed_groups', [])) + ") - " + str(priority))
+            print(f"     {i+1}. {dog['dog_name']} (groups: {dog['needed_groups']}) - {priority}")
         
         # Step 3: Try incremental radius expansion for each high-priority dog
         for priority, dog_to_move in strategic_dogs:
-            print("   🔄 Trying to move " + str(dog_to_move.get('dog_name', 'Unknown')) + " (groups: " + str(dog_to_move.get('needed_groups', [])) + ")...")
+            print(f"   🔄 Trying to move {dog_to_move['dog_name']} (groups: {dog_to_move['needed_groups']})...")
             
             # Use incremental radius expansion like the main algorithm
             move_result = self._attempt_incremental_move(dog_to_move, current_assignments, max_search_radius)
             
             if move_result:
-                print("   ✅ STRATEGIC MOVE SUCCESSFUL!")
-                print("      📦 Moved: " + str(dog_to_move.get('dog_name', 'Unknown')) + " → " + str(move_result.get('to_driver', 'Unknown')))
-                print("      📏 Distance: " + str(round(move_result.get('distance', 0), 3)) + "mi (found at radius " + str(move_result.get('radius', 0)) + "mi)")
-                print("      🎯 This frees " + str(blocked_groups) + " capacity in " + str(blocked_driver))
+                print(f"   ✅ STRATEGIC MOVE SUCCESSFUL!")
+                print(f"      📦 Moved: {dog_to_move['dog_name']} → {move_result['to_driver']}")
+                print(f"      📏 Distance: {move_result['distance']:.3f}mi (found at radius {move_result['radius']}mi)")
+                print(f"      🎯 This frees {blocked_groups} capacity in {blocked_driver}")
                 return move_result
             else:
-                print("   ❌ Could not move " + str(dog_to_move.get('dog_name', 'Unknown')) + " within " + str(max_search_radius) + "mi")
+                print(f"   ❌ Could not move {dog_to_move['dog_name']} within {max_search_radius}mi")
         
-        print("   ❌ STRATEGIC CASCADING FAILED - no dogs could be relocated")
+        print(f"   ❌ STRATEGIC CASCADING FAILED - no dogs could be relocated")
         return None
 
     def _identify_blocked_groups(self, driver_name, callout_dog, current_assignments):
@@ -648,16 +460,16 @@ class DogReassignmentSystem:
         
         # Check which groups would be over capacity
         for group in callout_dog['needed_groups']:
-            group_key = 'group' + str(group)
+            group_key = f'group{group}'
             current = current_load.get(group_key, 0)
             max_cap = capacity.get(group_key, 0)
             needed = callout_dog['num_dogs']
             
             if current + needed > max_cap:
                 blocked_groups.append(group)
-                print("   🚨 Group " + str(group) + " blocking: " + str(current) + " + " + str(needed) + " > " + str(max_cap))
+                print(f"   🚨 Group {group} blocking: {current} + {needed} > {max_cap}")
             else:
-                print("   ✅ Group " + str(group) + " has space: " + str(current) + " + " + str(needed) + " ≤ " + str(max_cap))
+                print(f"   ✅ Group {group} has space: {current} + {needed} ≤ {max_cap}")
         
         return blocked_groups
 
@@ -665,15 +477,9 @@ class DogReassignmentSystem:
         """Prioritize dogs based on strategic value for freeing blocked groups"""
         prioritized = []
         
-        print("   🔍 STRATEGIC PRIORITIZATION DEBUG:")
-        print("   📊 Blocked groups: " + str(blocked_groups))
-        print("   📊 Available dogs to move:")
-        
-        for i, dog in enumerate(driver_dogs):
+        for dog in driver_dogs:
             dog_groups = set(dog.get('needed_groups', []))
             blocked_set = set(blocked_groups)
-            
-            print("     " + str(i+1) + ". " + str(dog.get('dog_name', 'Unknown')) + " - groups: " + str(list(dog_groups)))
             
             # Calculate strategic priority
             if dog_groups.intersection(blocked_set):
@@ -681,15 +487,13 @@ class DogReassignmentSystem:
                 if len(dog_groups) == 1 and dog['num_dogs'] == 1:
                     priority = "HIGH - Single group, single dog in blocked group"
                 elif len(dog_groups) == 1:
-                    priority = "HIGH - Single group, " + str(dog['num_dogs']) + " dogs in blocked group"
+                    priority = f"HIGH - Single group, {dog['num_dogs']} dogs in blocked group"
                 else:
-                    priority = "MEDIUM - Multi-group dog partially in blocked group"
-                    print("       💡 Multi-group dog: Can be placed with drivers having ANY of groups " + str(list(dog_groups)))
+                    priority = f"MEDIUM - Multi-group dog partially in blocked group"
             else:
                 # Dog is not in blocked groups - LOW PRIORITY
                 priority = "LOW - Not in blocked groups (won't help)"
             
-            print("       🎯 Priority: " + str(priority))
             prioritized.append((priority, dog))
         
         # Sort by priority (HIGH first, then MEDIUM, then LOW)
@@ -703,45 +507,48 @@ class DogReassignmentSystem:
         return prioritized
 
     def _attempt_incremental_move(self, dog_to_move, current_assignments, max_radius):
-        """FIXED: Try to move a dog using SAFE moves"""
-        print("     🔍 Using incremental radius search for " + str(dog_to_move.get('dog_name', 'Unknown')) + "...")
+        """Try to move a dog using incremental radius expansion (0.2 → 0.3 → 0.4 → etc.)"""
+        print(f"     🔍 Using incremental radius search for {dog_to_move['dog_name']}...")
         
+        # Start at 0.2mi and expand incrementally
         current_radius = 0.2
         
         while current_radius <= max_radius:
-            print("       📏 Trying radius " + str(current_radius) + "mi...")
+            print(f"       📏 Trying radius {current_radius}mi...")
             
             # Find all potential targets within current radius
             targets = self._find_move_targets_at_radius(dog_to_move, current_assignments, current_radius)
             
             if targets:
-                print("       ✅ Found " + str(len(targets)) + " targets at " + str(current_radius) + "mi:")
+                print(f"       ✅ Found {len(targets)} targets at {current_radius}mi:")
                 for i, target in enumerate(targets[:3]):  # Show top 3
-                    print("         " + str(i+1) + ". " + str(target['driver']) + " - " + str(round(target['distance'], 3)) + "mi")
+                    print(f"         {i+1}. {target['driver']} - {target['distance']:.3f}mi")
                 
-                # Use the closest target with SAFE move
+                # Use the closest target
                 best_target = targets[0]
                 
-                # Execute the move using SAFE move function
-                if self._make_safe_move(dog_to_move, best_target['driver'], current_assignments):
-                    return {
-                        'moved_dog': dog_to_move,
-                        'from_driver': dog_to_move.get('driver', 'Unknown'),
-                        'to_driver': best_target['driver'],
-                        'distance': best_target['distance'],
-                        'via_dog': best_target['via_dog'],
-                        'radius': current_radius
-                    }
-                else:
-                    print("       🚨 SAFE MOVE FAILED for " + str(best_target['driver']))
+                # Execute the move
+                for assignment in current_assignments:
+                    if assignment['dog_id'] == dog_to_move['dog_id']:
+                        assignment['driver'] = best_target['driver']
+                        break
+                
+                return {
+                    'moved_dog': dog_to_move,
+                    'from_driver': dog_to_move.get('driver'),
+                    'to_driver': best_target['driver'],
+                    'distance': best_target['distance'],
+                    'via_dog': best_target['via_dog'],
+                    'radius': current_radius
+                }
             else:
-                print("       ❌ No targets at " + str(current_radius) + "mi")
+                print(f"       ❌ No targets at {current_radius}mi")
             
             # Expand radius
             current_radius += 0.1
-            current_radius = round(current_radius, 1)
+            current_radius = round(current_radius, 1)  # Avoid floating point issues
         
-        print("     ❌ No targets found within " + str(max_radius) + "mi")
+        print(f"     ❌ No targets found within {max_radius}mi")
         return None
 
     def _find_move_targets_at_radius(self, dog_to_move, current_assignments, radius):
@@ -766,8 +573,7 @@ class DogReassignmentSystem:
             dog_groups = dog_to_move.get('needed_groups', [])
             target_groups = assignment.get('needed_groups', [])
             
-            # Use flexible group compatibility for strategic moves
-            if not self.check_group_compatibility_for_moves(dog_groups, target_groups, distance, radius):
+            if not self.check_group_compatibility(dog_groups, target_groups, distance, radius):
                 continue
             
             # Check if target driver has capacity
@@ -776,32 +582,22 @@ class DogReassignmentSystem:
             
             can_accept = True
             for group in dog_groups:
-                group_key = 'group' + str(group)
+                group_key = f'group{group}'
                 current = target_load.get(group_key, 0)
                 max_cap = target_capacity.get(group_key, 0)
                 needed = dog_to_move.get('num_dogs', 1)
                 
                 if current + needed > max_cap:
                     can_accept = False
-                    print("         ❌ MOVE BLOCKED: " + str(target_driver) + " group " + str(group) + ": " + str(current) + " + " + str(needed) + " > " + str(max_cap))
                     break
             
             if can_accept:
-                # FINAL MOVE VALIDATION - Double-check capacity before allowing move
-                temp_dog = {
-                    'needed_groups': dog_groups,
-                    'num_dogs': dog_to_move.get('num_dogs', 1),
-                    'dog_name': dog_to_move.get('dog_name', 'Unknown')
-                }
-                if self.validate_assignment_capacity(target_driver, temp_dog, current_assignments):
-                    targets.append({
-                        'driver': target_driver,
-                        'distance': distance,
-                        'via_dog': assignment['dog_name'],
-                        'via_dog_id': assignment['dog_id']
-                    })
-                else:
-                    print("         🚨 MOVE TARGET BLOCKED by final validation for " + str(target_driver))
+                targets.append({
+                    'driver': target_driver,
+                    'distance': distance,
+                    'via_dog': assignment['dog_name'],
+                    'via_dog_id': assignment['dog_id']
+                })
         
         # Sort by distance (closest first)
         return sorted(targets, key=lambda x: x['distance'])
@@ -809,41 +605,54 @@ class DogReassignmentSystem:
     # ========== LEGACY CASCADING METHOD (KEPT FOR FALLBACK) ==========
 
     def attempt_cascading_move(self, blocked_driver, callout_dog, current_assignments, max_cascade_distance):
-        """FIXED: Legacy cascading with SAFE moves"""
-        print("🔄 ATTEMPTING LEGACY CASCADING MOVE for " + str(callout_dog.get('dog_name', 'Unknown')) + " → " + str(blocked_driver))
+        """LEGACY: Attempt to free space in blocked_driver by moving one of their dogs"""
+        print(f"🔄 ATTEMPTING LEGACY CASCADING MOVE for {callout_dog['dog_name']} → {blocked_driver}")
+        print(f"   Need to free space in {blocked_driver} for groups {callout_dog['needed_groups']}")
         
         driver_dogs = self.get_current_driver_dogs(blocked_driver, current_assignments)
-        print("   " + str(blocked_driver) + " currently has " + str(len(driver_dogs)) + " dogs assigned")
+        print(f"   {blocked_driver} currently has {len(driver_dogs)} dogs assigned")
         
-        # Try to move each dog using SAFE moves
+        # Show current load for this driver
+        current_load = self.calculate_driver_load(blocked_driver, current_assignments)
+        driver_capacity = self.driver_capacities.get(blocked_driver, {})
+        print(f"   {blocked_driver} capacity: ***{driver_capacity}***")
+        print(f"   {blocked_driver} current load: ***{current_load}***")
+        
+        # Try to move each dog, starting with single-group dogs (easier to place)
         move_candidates = sorted(driver_dogs, key=lambda x: (len(x.get('needed_groups', [])), x.get('num_dogs', 1)))
-        print("   Trying to move " + str(len(move_candidates)) + " dogs (easiest first):")
+        print(f"   Trying to move {len(move_candidates)} dogs (easiest first):")
         
         for i, dog_to_move in enumerate(move_candidates):
-            print("     " + str(i+1) + ". " + str(dog_to_move.get('dog_name', 'Unknown')) + " - groups " + str(dog_to_move.get('needed_groups', [])))
+            print(f"     {i+1}. {dog_to_move['dog_name']} ({dog_to_move['dog_id']}) - groups {dog_to_move['needed_groups']}, {dog_to_move['num_dogs']} dogs")
             
             # Find targets for this dog within cascade distance
             targets = self.find_move_targets_for_dog(dog_to_move, current_assignments, max_cascade_distance)
+            print(f"        Found {len(targets)} potential targets within {max_cascade_distance}mi:")
+            
+            for j, target in enumerate(targets[:3]):  # Show top 3 targets
+                print(f"          {j+1}. {target['driver']} - {target['distance']:.3f}mi via {target['via_dog']}")
             
             if targets:
                 best_target = targets[0]
-                print("        ✅ EXECUTING SAFE MOVE: " + str(dog_to_move.get('dog_name', 'Unknown')) + " → " + str(best_target['driver']))
+                print(f"        ✅ EXECUTING MOVE: {dog_to_move['dog_name']} from {blocked_driver} → {best_target['driver']}")
                 
-                # Execute the move using SAFE move function
-                if self._make_safe_move(dog_to_move, best_target['driver'], current_assignments):
-                    return {
-                        'moved_dog': dog_to_move,
-                        'from_driver': blocked_driver,
-                        'to_driver': best_target['driver'],
-                        'distance': best_target['distance'],
-                        'via_dog': best_target['via_dog']
-                    }
-                else:
-                    print("        🚨 SAFE MOVE FAILED for " + str(best_target['driver']))
+                # Execute the move
+                for assignment in current_assignments:
+                    if assignment['dog_id'] == dog_to_move['dog_id']:
+                        assignment['driver'] = best_target['driver']
+                        break
+                
+                return {
+                    'moved_dog': dog_to_move,
+                    'from_driver': blocked_driver,
+                    'to_driver': best_target['driver'],
+                    'distance': best_target['distance'],
+                    'via_dog': best_target['via_dog']
+                }
             else:
-                print("        ❌ No targets found for " + str(dog_to_move.get('dog_name', 'Unknown')))
+                print(f"        ❌ No targets found for {dog_to_move['dog_name']}")
         
-        print("   ❌ CASCADING MOVE FAILED - no dogs could be relocated")
+        print(f"   ❌ CASCADING MOVE FAILED - no dogs could be relocated")
         return None
 
     def find_move_targets_for_dog(self, dog_to_move, current_assignments, max_distance):
@@ -864,8 +673,7 @@ class DogReassignmentSystem:
             dog_groups = dog_to_move.get('needed_groups', [])
             target_groups = assignment.get('needed_groups', [])
             
-            # Use flexible group compatibility for strategic moves
-            if not self.check_group_compatibility_for_moves(dog_groups, target_groups, distance, max_distance):
+            if not self.check_group_compatibility(dog_groups, target_groups, distance, max_distance):
                 continue
             
             if distance > max_distance:
@@ -877,7 +685,7 @@ class DogReassignmentSystem:
             
             can_accept = True
             for group in dog_groups:
-                group_key = 'group' + str(group)
+                group_key = f'group{group}'
                 current = target_load.get(group_key, 0)
                 max_cap = target_capacity.get(group_key, 0)
                 needed = dog_to_move.get('num_dogs', 1)
@@ -887,31 +695,26 @@ class DogReassignmentSystem:
                     break
             
             if can_accept:
-                # FINAL LEGACY MOVE VALIDATION - Double-check capacity
-                temp_dog = {
-                    'needed_groups': dog_groups,
-                    'num_dogs': dog_to_move.get('num_dogs', 1),
-                    'dog_name': dog_to_move.get('dog_name', 'Unknown')
-                }
-                if self.validate_assignment_capacity(target_driver, temp_dog, current_assignments):
-                    targets.append({
-                        'driver': target_driver,
-                        'distance': distance,
-                        'via_dog': assignment['dog_name'],
-                        'via_dog_id': assignment['dog_id']
-                    })
-                else:
-                    print("         🚨 LEGACY MOVE TARGET BLOCKED by final validation for " + str(target_driver))
+                targets.append({
+                    'driver': target_driver,
+                    'distance': distance,
+                    'via_dog': assignment['dog_name'],
+                    'via_dog_id': assignment['dog_id']
+                })
         
         return sorted(targets, key=lambda x: x['distance'])
 
-    # ========== MAIN LOCALITY-FIRST ALGORITHM WITH COMPREHENSIVE CAPACITY FIX ==========
+    # ========== MAIN LOCALITY-FIRST ALGORITHM ==========
 
     def locality_first_assignment(self):
-        """COMPREHENSIVELY FIXED: All assignment paths now use safe assignment functions"""
-        print("\n🎯 LOCALITY-FIRST ASSIGNMENT ALGORITHM (COMPREHENSIVE CAPACITY FIX)")
-        print("🔧 FIX: ALL assignment paths now use centralized capacity validation")
-        print("🛡️ GUARANTEED: No driver can be over-assigned through ANY path")
+        """Locality-first assignment algorithm with strategic cascading and 1.5 mile range"""
+        print("\n🎯 LOCALITY-FIRST ASSIGNMENT ALGORITHM WITH STRATEGIC CASCADING")
+        print("🔄 Step-by-step proximity optimization with strategic cascading moves")
+        print("📏 Starting at 0.2mi, expanding to 1.5mi in 0.1mi increments")
+        print("🔄 Adjacent groups scale with radius (75% of current radius)")
+        print("🎯 STRATEGIC CASCADING: Target specific blocked groups with incremental radius")
+        print("🚶 Cascading moves up to 0.7mi with radius expansion (0.2→0.3→0.4→etc.)")
+        print("🎯 EXTENDED RANGE: Exact matches up to 1.5mi, adjacent up to 1.125mi")
         print("=" * 80)
         
         dogs_to_reassign = self.get_dogs_to_reassign()
@@ -943,9 +746,126 @@ class DogReassignmentSystem:
         
         print(f"🐕 Processing {len(dogs_remaining)} callout dogs")
         
-        print("\n📍 STEP 1: Direct assignments at ≤" + str(self.PREFERRED_DISTANCE) + "mi")
+        # DEBUG: Check distance matrix compatibility with callout dogs
+        print(f"\n🔍 DIAGNOSTIC: Distance matrix compatibility check...")
+        print(f"   📊 Distance matrix has {len(self.distance_matrix)} dog IDs")
+        print(f"   📋 First 10 matrix IDs: {list(self.distance_matrix.index[:10])}")
+        print(f"   🎯 Callout dog IDs: {[dog['dog_id'] for dog in dogs_remaining[:5]]}")
         
-        # Step 1: Process each dog individually with SAFE assignments
+        # Check if callout dog IDs exist in distance matrix
+        missing_ids = []
+        for dog in dogs_remaining[:5]:
+            if dog['dog_id'] not in self.distance_matrix.index:
+                missing_ids.append(dog['dog_id'])
+        
+        if missing_ids:
+            print(f"   🚨 MISSING FROM MATRIX: {missing_ids}")
+        else:
+            print(f"   ✅ All callout dog IDs found in distance matrix")
+            
+            # Test a few actual distance lookups with new compatibility rules
+            print(f"   🔍 Sample distance checks with 1.5mi range:")
+            for i, dog in enumerate(dogs_remaining[:2]):
+                print(f"     Testing callout dog: {dog['dog_name']} ({dog['dog_id']})")
+                for j, assignment in enumerate(current_assignments[:5]):
+                    try:
+                        # Raw matrix lookup
+                        raw_value = self.distance_matrix.loc[dog['dog_id'], assignment['dog_id']]
+                        
+                        # Through our function
+                        distance = self.get_distance(dog['dog_id'], assignment['dog_id'])
+                        
+                        # Check group compatibility with new rules
+                        compatible = self.check_group_compatibility(
+                            dog['needed_groups'], 
+                            assignment['needed_groups'], 
+                            distance
+                        )
+                        
+                        print(f"       Raw: {raw_value} → Distance: {distance:.3f}mi → Compatible: {compatible}")
+                        
+                    except Exception as e:
+                        print(f"       ❌ Error: {e}")
+                    
+                    if j == 4:  # Show 5 samples per dog
+                        break
+                if i == 0:  # Just show 1 dog for detailed analysis
+                    break
+        
+        # DIAGNOSTIC: Check driver capacity availability
+        print(f"\n🔍 DIAGNOSTIC: Driver capacity analysis...")
+        total_capacity = {'group1': 0, 'group2': 0, 'group3': 0}
+        total_used = {'group1': 0, 'group2': 0, 'group3': 0}
+        
+        for driver, capacity in self.driver_capacities.items():
+            current_load = self.calculate_driver_load(driver, current_assignments)
+            for group_key in ['group1', 'group2', 'group3']:
+                total_capacity[group_key] += capacity.get(group_key, 0)
+                total_used[group_key] += current_load.get(group_key, 0)
+        
+        print(f"   📊 Total capacity vs used:")
+        for group_key in ['group1', 'group2', 'group3']:
+            available = total_capacity[group_key] - total_used[group_key]
+            print(f"   {group_key}: {available}/{total_capacity[group_key]} available ({total_used[group_key]} used)")
+        
+        # DIAGNOSTIC: Check distances for first few dogs with 1.5 mile compatibility
+        print(f"\n🔍 DIAGNOSTIC: Distance check for first 3 dogs (with 1.5mi compatibility)...")
+        print(f"   📏 Thresholds: Exact match ≤1.5mi, Adjacent groups ≤1.125mi")
+        
+        # Group current assignments by driver to see all options
+        drivers_dogs = {}
+        for assignment in current_assignments:
+            driver = assignment['driver']
+            if driver not in drivers_dogs:
+                drivers_dogs[driver] = []
+            drivers_dogs[driver].append(assignment)
+        
+        print(f"   📊 Found {len(drivers_dogs)} drivers with assigned dogs:")
+        for driver, dogs in list(drivers_dogs.items())[:5]:  # Show first 5 drivers
+            print(f"     {driver}: {len(dogs)} dogs (groups: {[d['needed_groups'] for d in dogs[:3]]})")
+        
+        for i, callout_dog in enumerate(dogs_remaining[:3]):
+            print(f"   {callout_dog['dog_name']} ({callout_dog['dog_id']}) needs groups {callout_dog['needed_groups']}:")
+            
+            # Check distances to ALL drivers, not just first few assignments
+            driver_distances = {}
+            for driver, dogs in drivers_dogs.items():
+                closest_distance = float('inf')
+                closest_dog = None
+                
+                for dog_assignment in dogs:
+                    distance = self.get_distance(callout_dog['dog_id'], dog_assignment['dog_id'])
+                    if distance < closest_distance and distance < 100:  # Skip obvious placeholders
+                        closest_distance = distance
+                        closest_dog = dog_assignment
+                
+                if closest_dog and closest_distance != float('inf'):
+                    driver_distances[driver] = {
+                        'distance': closest_distance,
+                        'via_dog': closest_dog['dog_name'],
+                        'via_dog_id': closest_dog['dog_id'],
+                        'groups': closest_dog['needed_groups']
+                    }
+            
+            # Sort drivers by distance and show closest 5
+            sorted_drivers = sorted(driver_distances.items(), key=lambda x: x[1]['distance'])
+            print(f"     Closest drivers by distance (with 1.5mi compatibility):")
+            for j, (driver, info) in enumerate(sorted_drivers[:5]):
+                group_compat = self.check_group_compatibility(callout_dog['needed_groups'], info['groups'], info['distance'])
+                print(f"       {j+1}. {driver} - {info['distance']:.3f}mi via {info['via_dog']} (groups: {info['groups']}, compatible: {group_compat})")
+                
+                # Special highlight for close and compatible options
+                if group_compat and info['distance'] <= 1.0:
+                    print(f"          ✅ VIABLE OPTION! Distance: {info['distance']:.3f}mi")
+            
+            if not sorted_drivers:
+                print(f"     ❌ No realistic distances found")
+            
+            if i == 0:  # Just show detailed analysis for first dog
+                break
+        
+        print(f"\n📍 STEP 1: Direct assignments at ≤{self.PREFERRED_DISTANCE}mi")
+        
         dogs_assigned_step1 = []
         for callout_dog in dogs_remaining[:]:
             best_assignment = None
@@ -956,13 +876,29 @@ class DogReassignmentSystem:
                 driver = assignment['driver']
                 distance = self.get_distance(callout_dog['dog_id'], assignment['dog_id'])
                 
-                if distance >= 100.0 or distance > self.PREFERRED_DISTANCE:
+                # Skip obvious placeholders
+                if distance >= 100.0:
                     continue
                 
+                # Check group compatibility with distance requirements
                 if not self.check_group_compatibility(callout_dog['needed_groups'], assignment['needed_groups'], distance, self.PREFERRED_DISTANCE):
                     continue
                 
-                if distance < best_distance:
+                # Check capacity
+                current_load = self.calculate_driver_load(driver, current_assignments)
+                has_capacity = True
+                
+                for group in callout_dog['needed_groups']:
+                    group_key = f'group{group}'
+                    current = current_load.get(group_key, 0)
+                    max_cap = self.driver_capacities.get(driver, {}).get(group_key, 0)
+                    needed = callout_dog['num_dogs']
+                    
+                    if current + needed > max_cap:
+                        has_capacity = False
+                        break
+                
+                if has_capacity and distance < best_distance:
                     best_assignment = {
                         'driver': driver,
                         'distance': distance,
@@ -971,29 +907,43 @@ class DogReassignmentSystem:
                     best_distance = distance
             
             if best_assignment:
-                # Use SAFE assignment function
-                assignment_record = self._make_safe_assignment(
-                    callout_dog, 
-                    best_assignment['driver'], 
-                    current_assignments,
-                    'direct',
-                    'GOOD'
-                )
+                # Make the assignment
+                driver = best_assignment['driver']
+                distance = best_assignment['distance']
                 
-                if assignment_record:
-                    assignment_record['distance'] = best_assignment['distance']
-                    assignments_made.append(assignment_record)
-                    dogs_assigned_step1.append(callout_dog)
+                assignment_record = {
+                    'dog_id': callout_dog['dog_id'],
+                    'dog_name': callout_dog['dog_name'],
+                    'new_assignment': f"{driver}:{callout_dog['full_assignment_string']}",
+                    'driver': driver,
+                    'distance': distance,
+                    'quality': 'GOOD',
+                    'assignment_type': 'direct'
+                }
+                
+                assignments_made.append(assignment_record)
+                
+                # Update current assignments state
+                current_assignments.append({
+                    'dog_id': callout_dog['dog_id'],
+                    'dog_name': callout_dog['dog_name'],
+                    'driver': driver,
+                    'needed_groups': callout_dog['needed_groups'],
+                    'num_dogs': callout_dog['num_dogs']
+                })
+                
+                dogs_assigned_step1.append(callout_dog)
+                print(f"   ✅ {callout_dog['dog_name']} → {driver} ({distance:.1f}mi)")
         
         # Remove assigned dogs
         for dog in dogs_assigned_step1:
             dogs_remaining.remove(dog)
         
-        print("   📊 Step 1 results: " + str(len(dogs_assigned_step1)) + " direct assignments")
+        print(f"   📊 Step 1 results: {len(dogs_assigned_step1)} direct assignments")
         
-        # Step 2: Strategic cascading moves with SAFE moves
+        # Step 2: Capacity-blocked assignments with strategic cascading moves
         if dogs_remaining:
-            print("\n🎯 STEP 2: Strategic cascading moves")
+            print(f"\n🎯 STEP 2: Strategic cascading moves to free space at ≤{self.PREFERRED_DISTANCE}mi")
             
             dogs_assigned_step2 = []
             for callout_dog in dogs_remaining[:]:
@@ -1004,24 +954,22 @@ class DogReassignmentSystem:
                     driver = assignment['driver']
                     distance = self.get_distance(callout_dog['dog_id'], assignment['dog_id'])
                     
-                    if distance >= 100.0 or distance > self.PREFERRED_DISTANCE:
+                    # Skip obvious placeholders
+                    if distance >= 100.0:
                         continue
                     
+                    # Check group compatibility
                     if not self.check_group_compatibility(callout_dog['needed_groups'], assignment['needed_groups'], distance, self.PREFERRED_DISTANCE):
                         continue
                     
-                    # Check if blocked by capacity (using current state)
+                    # Check if blocked by capacity
                     current_load = self.calculate_driver_load(driver, current_assignments)
-                    driver_capacity = self.driver_capacities.get(driver, {})
-                    
-                    if not driver_capacity:
-                        continue
-                    
                     has_capacity = True
+                    
                     for group in callout_dog['needed_groups']:
-                        group_key = 'group' + str(group)
+                        group_key = f'group{group}'
                         current = current_load.get(group_key, 0)
-                        max_cap = driver_capacity.get(group_key, 0)
+                        max_cap = self.driver_capacities.get(driver, {}).get(group_key, 0)
                         needed = callout_dog['num_dogs']
                         
                         if current + needed > max_cap:
@@ -1034,16 +982,17 @@ class DogReassignmentSystem:
                             'distance': distance
                         })
                 
+                # Try strategic cascading moves for the closest blocked driver
                 if blocked_drivers:
                     blocked_drivers.sort(key=lambda x: x['distance'])
                     best_blocked = blocked_drivers[0]
                     
-                    # Try strategic cascading move using SAFE moves
+                    # 🎯 STRATEGIC CASCADING: Use strategic approach instead of legacy
                     move_result = self.attempt_strategic_cascading_move(
                         best_blocked['driver'], 
                         callout_dog, 
                         current_assignments, 
-                        self.CASCADING_MOVE_MAX
+                        self.CASCADING_MOVE_MAX  # 0.7mi max search with incremental expansion
                     )
                     
                     if move_result:
@@ -1054,47 +1003,64 @@ class DogReassignmentSystem:
                             'from_driver': move_result['from_driver'],
                             'to_driver': move_result['to_driver'],
                             'distance': move_result['distance'],
-                            'reason': "strategic_free_space_for_" + callout_dog.get('dog_name', 'Unknown')
+                            'reason': f"strategic_free_space_for_{callout_dog['dog_name']}"
                         })
                         
-                        # Update existing assignment for moved dog
+                        # 🎯 CRITICAL FIX: Update any existing assignments for moved dog
                         moved_dog_id = move_result['moved_dog']['dog_id']
                         for existing_assignment in assignments_made:
                             if existing_assignment['dog_id'] == moved_dog_id:
+                                # Update the assignment to show final location
                                 old_driver = existing_assignment['driver']
                                 new_driver = move_result['to_driver']
                                 existing_assignment['driver'] = new_driver
-                                existing_assignment['new_assignment'] = existing_assignment['new_assignment'].replace(old_driver + ":", new_driver + ":")
+                                existing_assignment['new_assignment'] = existing_assignment['new_assignment'].replace(f"{old_driver}:", f"{new_driver}:")
                                 existing_assignment['assignment_type'] = 'moved_by_strategic_cascading'
+                                print(f"      🔄 Updated final assignment: {move_result['moved_dog']['dog_name']} → {new_driver}")
                                 break
                         
-                        # Now assign the callout dog using SAFE assignment
-                        assignment_record = self._make_safe_assignment(
-                            callout_dog,
-                            best_blocked['driver'],
-                            current_assignments,
-                            'strategic_cascading',
-                            'GOOD'
-                        )
+                        # Now assign the callout dog to the freed space
+                        driver = best_blocked['driver']
+                        distance = best_blocked['distance']
                         
-                        if assignment_record:
-                            assignment_record['distance'] = best_blocked['distance']
-                            assignments_made.append(assignment_record)
-                            dogs_assigned_step2.append(callout_dog)
-                            print("      🎯 Strategic move: " + str(move_result['moved_dog']['dog_name']) + " → " + str(move_result['to_driver']) + " (" + str(round(move_result['distance'], 1)) + "mi)")
+                        assignment_record = {
+                            'dog_id': callout_dog['dog_id'],
+                            'dog_name': callout_dog['dog_name'],
+                            'new_assignment': f"{driver}:{callout_dog['full_assignment_string']}",
+                            'driver': driver,
+                            'distance': distance,
+                            'quality': 'GOOD',
+                            'assignment_type': 'strategic_cascading'
+                        }
+                        
+                        assignments_made.append(assignment_record)
+                        
+                        # Update current assignments state
+                        current_assignments.append({
+                            'dog_id': callout_dog['dog_id'],
+                            'dog_name': callout_dog['dog_name'],
+                            'driver': driver,
+                            'needed_groups': callout_dog['needed_groups'],
+                            'num_dogs': callout_dog['num_dogs']
+                        })
+                        
+                        dogs_assigned_step2.append(callout_dog)
+                        print(f"   ✅ {callout_dog['dog_name']} → {driver} ({distance:.1f}mi)")
+                        print(f"      🎯 Strategic move: {move_result['moved_dog']['dog_name']} → {move_result['to_driver']} ({move_result['distance']:.1f}mi at radius {move_result['radius']}mi)")
             
             # Remove assigned dogs
             for dog in dogs_assigned_step2:
                 dogs_remaining.remove(dog)
             
-            print("   📊 Step 2 results: " + str(len(dogs_assigned_step2)) + " strategic cascading assignments")
+            print(f"   📊 Step 2 results: {len(dogs_assigned_step2)} strategic cascading assignments")
         
-        # Step 3+: Incremental radius expansion with SAFE assignments
+        # Step 3+: Incremental radius expansion (0.3 to 1.5 miles)
         current_radius = 0.3
         step_number = 3
         
         while current_radius <= self.ABSOLUTE_MAX_DISTANCE and dogs_remaining:
-            print("\n📏 STEP " + str(step_number) + ": Radius expansion to ≤" + str(current_radius) + "mi")
+            print(f"\n📏 STEP {step_number}: Radius expansion to ≤{current_radius}mi")
+            print(f"   🎯 Thresholds: Perfect match ≤{current_radius}mi, Adjacent groups ≤{current_radius*0.75:.2f}mi")
             
             dogs_assigned_this_radius = []
             
@@ -1107,13 +1073,32 @@ class DogReassignmentSystem:
                     driver = assignment['driver']
                     distance = self.get_distance(callout_dog['dog_id'], assignment['dog_id'])
                     
-                    if distance >= 100.0 or distance > current_radius:
+                    # Skip obvious placeholders
+                    if distance >= 100.0:
                         continue
                     
+                    if distance > current_radius:
+                        continue
+                    
+                    # Check group compatibility
                     if not self.check_group_compatibility(callout_dog['needed_groups'], assignment['needed_groups'], distance, current_radius):
                         continue
                     
-                    if distance < best_distance:
+                    # Check capacity
+                    current_load = self.calculate_driver_load(driver, current_assignments)
+                    has_capacity = True
+                    
+                    for group in callout_dog['needed_groups']:
+                        group_key = f'group{group}'
+                        current = current_load.get(group_key, 0)
+                        max_cap = self.driver_capacities.get(driver, {}).get(group_key, 0)
+                        needed = callout_dog['num_dogs']
+                        
+                        if current + needed > max_cap:
+                            has_capacity = False
+                            break
+                    
+                    if has_capacity and distance < best_distance:
                         best_assignment = {
                             'driver': driver,
                             'distance': distance,
@@ -1122,8 +1107,11 @@ class DogReassignmentSystem:
                         best_distance = distance
                 
                 if best_assignment:
-                    # Determine quality
+                    # Direct assignment possible
+                    driver = best_assignment['driver']
                     distance = best_assignment['distance']
+                    
+                    # Determine quality with 3-way check
                     if distance <= self.PREFERRED_DISTANCE:
                         quality = 'GOOD'
                     elif distance <= self.MAX_DISTANCE:
@@ -1131,46 +1119,57 @@ class DogReassignmentSystem:
                     else:
                         quality = 'EMERGENCY'
                     
-                    # Use SAFE assignment function
-                    assignment_record = self._make_safe_assignment(
-                        callout_dog,
-                        best_assignment['driver'],
-                        current_assignments,
-                        'radius_expansion',
-                        quality
-                    )
+                    assignment_record = {
+                        'dog_id': callout_dog['dog_id'],
+                        'dog_name': callout_dog['dog_name'],
+                        'new_assignment': f"{driver}:{callout_dog['full_assignment_string']}",
+                        'driver': driver,
+                        'distance': distance,
+                        'quality': quality,
+                        'assignment_type': 'radius_expansion'
+                    }
                     
-                    if assignment_record:
-                        assignment_record['distance'] = best_assignment['distance']
-                        assignments_made.append(assignment_record)
-                        dogs_assigned_this_radius.append(callout_dog)
+                    assignments_made.append(assignment_record)
+                    
+                    # Update state
+                    current_assignments.append({
+                        'dog_id': callout_dog['dog_id'],
+                        'dog_name': callout_dog['dog_name'],
+                        'driver': driver,
+                        'needed_groups': callout_dog['needed_groups'],
+                        'num_dogs': callout_dog['num_dogs']
+                    })
+                    
+                    dogs_assigned_this_radius.append(callout_dog)
+                    print(f"   ✅ {callout_dog['dog_name']} → {driver} ({distance:.1f}mi) [{quality}]")
                 
                 else:
-                    # Try strategic cascading at current radius using SAFE moves
+                    # Try strategic cascading moves at current radius
                     blocked_drivers = []
                     
                     for assignment in current_assignments:
                         driver = assignment['driver']
                         distance = self.get_distance(callout_dog['dog_id'], assignment['dog_id'])
                         
-                        if distance >= 100.0 or distance > current_radius:
+                        # Skip obvious placeholders
+                        if distance >= 100.0:
                             continue
                         
+                        if distance > current_radius:
+                            continue
+                        
+                        # Check group compatibility
                         if not self.check_group_compatibility(callout_dog['needed_groups'], assignment['needed_groups'], distance, current_radius):
                             continue
                         
                         # Check if blocked by capacity
                         current_load = self.calculate_driver_load(driver, current_assignments)
-                        driver_capacity = self.driver_capacities.get(driver, {})
-                        
-                        if not driver_capacity:
-                            continue
-                        
                         has_capacity = True
+                        
                         for group in callout_dog['needed_groups']:
-                            group_key = 'group' + str(group)
+                            group_key = f'group{group}'
                             current = current_load.get(group_key, 0)
-                            max_cap = driver_capacity.get(group_key, 0)
+                            max_cap = self.driver_capacities.get(driver, {}).get(group_key, 0)
                             needed = callout_dog['num_dogs']
                             
                             if current + needed > max_cap:
@@ -1187,12 +1186,12 @@ class DogReassignmentSystem:
                         blocked_drivers.sort(key=lambda x: x['distance'])
                         best_blocked = blocked_drivers[0]
                         
-                        # Try strategic cascading move using SAFE moves
+                        # 🎯 STRATEGIC CASCADING: Use current radius as max search distance
                         move_result = self.attempt_strategic_cascading_move(
                             best_blocked['driver'], 
                             callout_dog, 
                             current_assignments, 
-                            current_radius
+                            current_radius  # Use current search radius for strategic cascading
                         )
                         
                         if move_result:
@@ -1203,22 +1202,14 @@ class DogReassignmentSystem:
                                 'from_driver': move_result['from_driver'],
                                 'to_driver': move_result['to_driver'],
                                 'distance': move_result['distance'],
-                                'reason': "strategic_radius_" + str(current_radius) + "_space_for_" + callout_dog.get('dog_name', 'Unknown')
+                                'reason': f"strategic_radius_{current_radius}_space_for_{callout_dog['dog_name']}"
                             })
                             
-                            # Update existing assignment for moved dog
-                            moved_dog_id = move_result['moved_dog']['dog_id']
-                            for existing_assignment in assignments_made:
-                                if existing_assignment['dog_id'] == moved_dog_id:
-                                    old_driver = existing_assignment['driver']
-                                    new_driver = move_result['to_driver']
-                                    existing_assignment['driver'] = new_driver
-                                    existing_assignment['new_assignment'] = existing_assignment['new_assignment'].replace(old_driver + ":", new_driver + ":")
-                                    existing_assignment['assignment_type'] = 'moved_by_strategic_cascading'
-                                    break
-                            
-                            # Assign the callout dog using SAFE assignment
+                            # Assign the callout dog
+                            driver = best_blocked['driver']
                             distance = best_blocked['distance']
+                            
+                            # Determine quality with 3-way check
                             if distance <= self.PREFERRED_DISTANCE:
                                 quality = 'GOOD'
                             elif distance <= self.MAX_DISTANCE:
@@ -1226,41 +1217,56 @@ class DogReassignmentSystem:
                             else:
                                 quality = 'EMERGENCY'
                             
-                            assignment_record = self._make_safe_assignment(
-                                callout_dog,
-                                best_blocked['driver'],
-                                current_assignments,
-                                'strategic_cascading_radius',
-                                quality
-                            )
+                            assignment_record = {
+                                'dog_id': callout_dog['dog_id'],
+                                'dog_name': callout_dog['dog_name'],
+                                'new_assignment': f"{driver}:{callout_dog['full_assignment_string']}",
+                                'driver': driver,
+                                'distance': distance,
+                                'quality': quality,
+                                'assignment_type': 'strategic_cascading_radius'
+                            }
                             
-                            if assignment_record:
-                                assignment_record['distance'] = best_blocked['distance']
-                                assignments_made.append(assignment_record)
-                                dogs_assigned_this_radius.append(callout_dog)
-                                print("      🎯 Strategic move: " + str(move_result['moved_dog']['dog_name']) + " → " + str(move_result['to_driver']) + " (" + str(round(move_result['distance'], 1)) + "mi)")
+                            assignments_made.append(assignment_record)
+                            
+                            # Update state
+                            current_assignments.append({
+                                'dog_id': callout_dog['dog_id'],
+                                'dog_name': callout_dog['dog_name'],
+                                'driver': driver,
+                                'needed_groups': callout_dog['needed_groups'],
+                                'num_dogs': callout_dog['num_dogs']
+                            })
+                            
+                            dogs_assigned_this_radius.append(callout_dog)
+                            print(f"   ✅ {callout_dog['dog_name']} → {driver} ({distance:.1f}mi) [{quality}]")
+                            print(f"      🎯 Strategic move: {move_result['moved_dog']['dog_name']} → {move_result['to_driver']} ({move_result['distance']:.1f}mi at radius {move_result['radius']}mi)")
             
             # Remove assigned dogs
             for dog in dogs_assigned_this_radius:
                 dogs_remaining.remove(dog)
             
-            print("   📊 Radius " + str(current_radius) + "mi results: " + str(len(dogs_assigned_this_radius)) + " assignments")
+            print(f"   📊 Radius {current_radius}mi results: {len(dogs_assigned_this_radius)} assignments")
             
             current_radius += 0.1
             step_number += 1
         
         # Final step: Mark remaining as emergency
-        for callout_dog in dogs_remaining:
-            assignment_record = {
-                'dog_id': callout_dog['dog_id'],
-                'dog_name': callout_dog['dog_name'],
-                'new_assignment': "UNASSIGNED:" + callout_dog['full_assignment_string'],
-                'driver': 'UNASSIGNED',
-                'distance': float('inf'),
-                'quality': 'EMERGENCY',
-                'assignment_type': 'failed'
-            }
-            assignments_made.append(assignment_record)
+        if dogs_remaining:
+            print(f"\n🚨 FINAL STEP: {len(dogs_remaining)} remaining dogs marked as EMERGENCY")
+            
+            for callout_dog in dogs_remaining:
+                assignment_record = {
+                    'dog_id': callout_dog['dog_id'],
+                    'dog_name': callout_dog['dog_name'],
+                    'new_assignment': f"UNASSIGNED:{callout_dog['full_assignment_string']}",
+                    'driver': 'UNASSIGNED',
+                    'distance': float('inf'),
+                    'quality': 'EMERGENCY',
+                    'assignment_type': 'failed'
+                }
+                assignments_made.append(assignment_record)
+                print(f"   ❌ {callout_dog['dog_name']} - No viable assignment found")
         
         # Store moves for writing
         self.greedy_moves_made = moves_made
@@ -1270,66 +1276,69 @@ class DogReassignmentSystem:
         good_count = len([a for a in assignments_made if a['quality'] == 'GOOD'])
         backup_count = len([a for a in assignments_made if a['quality'] == 'BACKUP'])
         emergency_count = len([a for a in assignments_made if a['quality'] == 'EMERGENCY'])
+        strategic_moves = len([m for m in moves_made if 'strategic' in m['reason']])
         
-        print("\n🏆 COMPREHENSIVE CAPACITY FIX RESULTS:")
-        print("   📊 " + str(len(assignments_made)) + "/" + str(total_dogs) + " dogs processed")
-        print("   💚 " + str(good_count) + " GOOD assignments")
-        print("   🟡 " + str(backup_count) + " BACKUP assignments")
-        print("   🚨 " + str(emergency_count) + " EMERGENCY assignments")
-        print("   🛡️ COMPREHENSIVE FIX: ALL assignment paths now use safe capacity validation")
-        print("   ✅ GUARANTEED: No driver can be over-assigned through ANY path")
+        print(f"\n🏆 LOCALITY-FIRST + STRATEGIC CASCADING RESULTS:")
+        print(f"   📊 {len(assignments_made)}/{total_dogs} dogs processed")
+        print(f"   💚 {good_count} GOOD assignments (≤{self.PREFERRED_DISTANCE}mi)")
+        print(f"   🟡 {backup_count} BACKUP assignments ({self.PREFERRED_DISTANCE}-{self.MAX_DISTANCE}mi)")
+        print(f"   🚨 {emergency_count} EMERGENCY assignments (>{self.MAX_DISTANCE}mi)")
+        print(f"   🎯 {strategic_moves} strategic cascading moves executed")
+        print(f"   🚶 {len(moves_made)} total cascading moves executed")
+        print(f"   🎯 Success rate: {(good_count + backup_count)/total_dogs*100:.0f}% practical assignments")
+        print(f"   🎯 Extended range: Exact matches ≤1.5mi, Adjacent groups ≤1.125mi")
+        print(f"   🎯 Strategic cascading: Target blocked groups with incremental radius expansion")
         
         return assignments_made
 
     def reassign_dogs_multi_strategy_optimization(self):
-        """Locality-first algorithm with comprehensive capacity fix"""
-        print("\n🔄 Starting LOCALITY-FIRST + STRATEGIC CASCADING SYSTEM (COMPREHENSIVE FIX)...")
+        """Locality-first algorithm with strategic cascading and 1.5 mile range"""
+        print("\n🔄 Starting LOCALITY-FIRST + STRATEGIC CASCADING SYSTEM...")
         print("🎯 Strategy: Proximity-first with strategic group-targeted cascading")
         print("📊 Quality: GOOD ≤0.2mi, BACKUP ≤0.5mi, EMERGENCY >0.5mi")
         print("🚨 Focus: Immediate proximity with strategic dynamic space optimization")
         print("🎯 EXTENDED RANGE: Up to 1.5mi exact matches, 1.125mi adjacent matches")
         print("🎯 STRATEGIC CASCADING: Target blocked groups with 0.2→0.3→0.4→etc. radius expansion")
-        print("🛡️ COMPREHENSIVE CAPACITY FIX: ALL assignment paths now use safe validation")
         print("=" * 80)
         
-        # Try the locality-first algorithm with comprehensive capacity fix
+        # Try the locality-first algorithm with strategic cascading
         try:
             return self.locality_first_assignment()
         except Exception as e:
-            print("⚠️ Locality-first algorithm failed: " + str(e))
+            print(f"⚠️ Locality-first algorithm failed: {e}")
             print("🔄 Falling back to basic assignment...")
             return []
 
     def write_results_to_sheets(self, reassignments):
         """Write reassignment results and greedy walk moves back to Google Sheets"""
         try:
-            print("\n📝 Writing " + str(len(reassignments)) + " results to Google Sheets...")
+            print(f"\n📝 Writing {len(reassignments)} results to Google Sheets...")
             
             if not hasattr(self, 'sheets_client') or not self.sheets_client:
                 print("❌ Google Sheets client not initialized")
                 return False
             
             # Pre-validation of reassignments data
-            print("🔒 PRE-VALIDATION: Checking reassignment data structure...")
+            print(f"🔒 PRE-VALIDATION: Checking reassignment data structure...")
             for i, assignment in enumerate(reassignments[:3]):  # Show first 3
                 dog_id = assignment.get('dog_id', 'MISSING')
                 new_assignment = assignment.get('new_assignment', 'MISSING')
-                print("   " + str(i+1) + ". Dog ID: '" + str(dog_id) + "' → New Assignment: '" + str(new_assignment) + "'")
+                print(f"   {i+1}. Dog ID: '{dog_id}' → New Assignment: '{new_assignment}'")
                 
                 # Critical safety checks
                 if dog_id == new_assignment:
-                    print("   🚨 CRITICAL ERROR: dog_id equals new_assignment! ABORTING!")
+                    print(f"   🚨 CRITICAL ERROR: dog_id equals new_assignment! ABORTING!")
                     return False
                 
                 if new_assignment.endswith('x') and new_assignment[:-1].isdigit():
-                    print("   🚨 CRITICAL ERROR: new_assignment looks like dog_id! ABORTING!")
+                    print(f"   🚨 CRITICAL ERROR: new_assignment looks like dog_id! ABORTING!")
                     return False
                 
                 if ':' not in new_assignment:
-                    print("   🚨 CRITICAL ERROR: new_assignment missing driver:group format! ABORTING!")
+                    print(f"   🚨 CRITICAL ERROR: new_assignment missing driver:group format! ABORTING!")
                     return False
             
-            print("✅ Pre-validation passed!")
+            print(f"✅ Pre-validation passed!")
             
             # Extract sheet ID
             sheet_id = "1mg8d5CLxSR54KhNUL8SpL5jzrGN-bghTsC9vxSK8lR0"
@@ -1351,7 +1360,7 @@ class DogReassignmentSystem:
                 for sheet_name in ["Map", "Sheet1", "Dogs", "Assignments"]:
                     try:
                         worksheet = spreadsheet.worksheet(sheet_name)
-                        print("📋 Using sheet: " + str(sheet_name))
+                        print(f"📋 Using sheet: {sheet_name}")
                         break
                     except:
                         continue
@@ -1367,7 +1376,7 @@ class DogReassignmentSystem:
                 return False
             
             header_row = all_data[0]
-            print("📋 Sheet has " + str(len(all_data)) + " rows")
+            print(f"📋 Sheet has {len(all_data)} rows")
             
             # Find the Dog ID column
             dog_id_col = None
@@ -1375,7 +1384,7 @@ class DogReassignmentSystem:
                 header_clean = str(header).lower().strip()
                 if 'dog id' in header_clean:
                     dog_id_col = i
-                    print("📍 Found Dog ID column at index " + str(i))
+                    print(f"📍 Found Dog ID column at index {i}")
                     break
             
             if dog_id_col is None:
@@ -1384,22 +1393,22 @@ class DogReassignmentSystem:
             
             # Target Column H (Combined column) - index 7
             target_col = 7  
-            print("📍 Writing to Column H (Combined) at index " + str(target_col))
+            print(f"📍 Writing to Column H (Combined) at index {target_col}")
             
             # Prepare batch updates for reassignments
             updates = []
             updates_count = 0
             
-            print("\n🔍 Processing " + str(len(reassignments)) + " reassignments...")
+            print(f"\n🔍 Processing {len(reassignments)} reassignments...")
             
-            # Process reassignments (now includes final locations after strategic moves)
+            # Process reassignments
             for assignment in reassignments:
                 dog_id = str(assignment.get('dog_id', '')).strip()
                 new_assignment = str(assignment.get('new_assignment', '')).strip()
                 
                 # Final validation
                 if not new_assignment or new_assignment == dog_id or ':' not in new_assignment:
-                    print("  ❌ SKIPPING invalid assignment for " + str(dog_id))
+                    print(f"  ❌ SKIPPING invalid assignment for {dog_id}")
                     continue
                 
                 # Find the row for this dog ID
@@ -1416,55 +1425,81 @@ class DogReassignmentSystem:
                             })
                             
                             updates_count += 1
-                            assignment_type = assignment.get('assignment_type', 'unknown')
-                            if 'moved_by_strategic' in assignment_type:
-                                print("  🎯 " + str(dog_id) + " → " + str(new_assignment) + " (final location after strategic move)")
-                            else:
-                                print("  ✅ " + str(dog_id) + " → " + str(new_assignment))
+                            print(f"  ✅ {dog_id} → {new_assignment}")
                             break
+            
+            # Process strategic cascading moves if any
+            if hasattr(self, 'greedy_moves_made') and self.greedy_moves_made:
+                print(f"\n🔍 Processing {len(self.greedy_moves_made)} strategic cascading moves...")
+                
+                for move in self.greedy_moves_made:
+                    dog_id = str(move.get('dog_id', '')).strip()
+                    from_driver = move.get('from_driver', '')
+                    to_driver = move.get('to_driver', '')
+                    
+                    # Find current assignment for this dog and update driver
+                    for row_idx in range(1, len(all_data)):
+                        if dog_id_col < len(all_data[row_idx]):
+                            current_dog_id = str(all_data[row_idx][dog_id_col]).strip()
+                            
+                            if current_dog_id == dog_id:
+                                # Get current assignment and update driver
+                                current_combined = str(all_data[row_idx][target_col]).strip()
+                                if ':' in current_combined:
+                                    assignment_part = current_combined.split(':', 1)[1]
+                                    new_combined = f"{to_driver}:{assignment_part}"
+                                    
+                                    cell_address = gspread.utils.rowcol_to_a1(row_idx + 1, target_col + 1)
+                                    
+                                    updates.append({
+                                        'range': cell_address,
+                                        'values': [[new_combined]]
+                                    })
+                                    
+                                    print(f"  🎯 {dog_id} strategic move: {from_driver} → {to_driver}")
+                                    updates_count += 1
+                                break
             
             if not updates:
                 print("❌ No valid updates to make")
                 return False
             
             # Execute batch update
-            print("\n📤 Writing " + str(len(updates)) + " updates to Google Sheets...")
+            print(f"\n📤 Writing {len(updates)} updates to Google Sheets...")
             worksheet.batch_update(updates)
             
-            strategic_moves = len([a for a in reassignments if 'moved_by_strategic' in a.get('assignment_type', '')])
-            success_msg = "✅ Successfully updated " + str(updates_count) + " assignments with comprehensive capacity protection!"
-            if strategic_moves > 0:
-                success_msg += " (including " + str(strategic_moves) + " dogs moved to final locations via strategic cascading)"
+            success_msg = f"✅ Successfully updated {updates_count} assignments with strategic cascading!"
+            if hasattr(self, 'greedy_moves_made') and self.greedy_moves_made:
+                strategic_moves = len([m for m in self.greedy_moves_made if 'strategic' in m['reason']])
+                success_msg += f" (including {strategic_moves} strategic cascading moves)"
             
             print(success_msg)
-            print("🎯 Used locality-first + strategic cascading with 1.5mi range + 75% adjacent")
-            print("🛡️ COMPREHENSIVE CAPACITY FIX: No driver can exceed capacity limits through ANY path")
+            print(f"🎯 Used locality-first + strategic cascading with 1.5mi range + 75% adjacent")
             
             # Send Slack notification
             slack_webhook = os.environ.get('SLACK_WEBHOOK_URL')
             if slack_webhook:
                 try:
-                    message = "🐕 Dog Reassignment Complete (COMPREHENSIVE CAPACITY FIX): " + str(updates_count) + " assignments updated with complete capacity protection. Guaranteed no over-capacity assignments!"
+                    message = f"🐕 Dog Reassignment Complete: {updates_count} assignments updated using strategic cascading + 1.5mi range"
                     slack_message = {"text": message}
                     response = requests.post(slack_webhook, json=slack_message, timeout=10)
                     if response.status_code == 200:
                         print("📱 Slack notification sent")
                 except Exception as e:
-                    print("⚠️ Could not send Slack notification: " + str(e))
+                    print(f"⚠️ Could not send Slack notification: {e}")
             
             return True
             
         except Exception as e:
-            print("❌ Error writing to sheets: " + str(e))
+            print(f"❌ Error writing to sheets: {e}")
             import traceback
-            print("🔍 Full error: " + str(traceback.format_exc()))
+            print(f"🔍 Full error: {traceback.format_exc()}")
             return False
 
 
 def main():
     """Main function to run the dog reassignment system"""
-    print("🚀 Enhanced Dog Reassignment System - COMPREHENSIVE CAPACITY FIX")
-    print("🛡️ FIX: ALL assignment paths now use centralized capacity validation")
+    print("🚀 Enhanced Dog Reassignment System - STRATEGIC CASCADING + 1.5 MILE RANGE")
     print("🎯 NEW: Strategic group-targeted cascading with incremental radius expansion")
     print("📏 Starts at 0.2mi, expands to 1.5mi in 0.1mi increments")
     print("🔄 Adjacent groups: 75% of current radius (more generous)")
@@ -1473,7 +1508,6 @@ def main():
     print("🧅 Onion-layer backflow pushes outer assignments out to create inner space")
     print("📊 Quality: GOOD ≤0.2mi, BACKUP ≤0.5mi, EMERGENCY >0.5mi")
     print("🎯 EXTENDED RANGE: Exact matches ≤1.5mi, Adjacent groups ≤1.125mi")
-    print("✅ GUARANTEED: No driver can be over-assigned through ANY assignment path")
     print("=" * 80)
     
     # Initialize system
@@ -1499,7 +1533,7 @@ def main():
         print("❌ Failed to load driver capacities")
         return
     
-    # Run the locality-first assignment with comprehensive capacity fix
+    # Run the locality-first assignment with strategic cascading
     print("\n🔄 Processing callout assignments...")
     
     reassignments = system.reassign_dogs_multi_strategy_optimization()
@@ -1512,13 +1546,12 @@ def main():
     if reassignments:
         write_success = system.write_results_to_sheets(reassignments)
         if write_success:
-            print("\n🎉 SUCCESS! Processed " + str(len(reassignments)) + " callout assignments")
-            print("✅ Used locality-first + strategic cascading with 1.5mi range + 75% adjacent")
-            print("🛡️ COMPREHENSIVE CAPACITY FIX: All drivers remain within capacity limits through ALL paths")
+            print(f"\n🎉 SUCCESS! Processed {len(reassignments)} callout assignments")
+            print(f"✅ Used locality-first + strategic cascading with 1.5mi range + 75% adjacent")
         else:
-            print("\n❌ Failed to write " + str(len(reassignments)) + " results to Google Sheets")
+            print(f"\n❌ Failed to write {len(reassignments)} results to Google Sheets")
     else:
-        print("\n✅ No callout assignments needed - all drivers available or no valid assignments found")
+        print(f"\n✅ No callout assignments needed - all drivers available or no valid assignments found")
 
 
 if __name__ == "__main__":
