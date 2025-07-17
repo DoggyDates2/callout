@@ -1556,3 +1556,36 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+    # ========== CAPACITY CLEANUP PHASE ==========
+    print("\n" + "="*80)
+    print("🔧 AGGRESSIVE CAPACITY CLEANUP - Fixing violations with extreme proximity")
+    print("📏 Thresholds: ≤0.5mi direct, ≤0.3mi adjacent, ≤0.6mi cascading")
+    print("🎯 Goal: 100% close placements, zero tolerance for distant fixes")
+    print("="*80)
+    
+    try:
+        # Import and run cleanup
+        from capacity_cleanup import CapacityCleanup
+        
+        cleanup = CapacityCleanup()
+        # Copy data instead of reloading
+        cleanup.distance_matrix = system.distance_matrix
+        cleanup.dog_assignments = system.dog_assignments  # Updated assignments
+        cleanup.driver_capacities = system.driver_capacities
+        cleanup.sheets_client = system.sheets_client
+        
+        # Run aggressive cleanup
+        moves = cleanup.fix_capacity_violations()
+        
+        if moves:
+            success = cleanup.write_moves_to_sheets(moves)
+            if success:
+                print(f"\n🎉 COMPLETE SUCCESS! Main + cleanup: extreme proximity achieved")
+            else:
+                print(f"\n⚠️ Main completed, cleanup had sheet writing issues")
+        else:
+            print(f"\n✅ Perfect! No capacity violations to clean up")
+            
+    except Exception as e:
+        print(f"\n⚠️ Cleanup phase error (main script succeeded): {e}")
