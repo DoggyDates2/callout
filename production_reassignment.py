@@ -360,6 +360,50 @@ class DogReassignmentSystem:
             print(f"❌ Error loading driver capacities: {e}")
             return False
 
+    def load_haversine_matrix(self, url=None, sheet_id=None, gid=None):
+        """Load haversine distance matrix as fallback (optional)"""
+        try:
+            print("📊 Loading haversine distance matrix (fallback)...")
+            
+            # You can either provide a URL or sheet details
+            if url:
+                response = requests.get(url, timeout=30)
+                response.raise_for_status()
+                from io import StringIO
+                df = pd.read_csv(StringIO(response.text), index_col=0)
+            elif sheet_id and self.sheets_client:
+                # Load via API
+                spreadsheet = self.sheets_client.open_by_key(sheet_id)
+                worksheet = spreadsheet.get_worksheet(0) if not gid else None
+                
+                if gid:
+                    for ws in spreadsheet.worksheets():
+                        if str(ws.id) == str(gid):
+                            worksheet = ws
+                            break
+                
+                all_values = worksheet.get_all_values()
+                df = pd.DataFrame(all_values[1:], columns=all_values[0])
+                df = df.set_index(df.columns[0])
+                
+                # Convert to numeric
+                for col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            else:
+                print("⚠️ No haversine matrix URL or sheet ID provided")
+                return False
+            
+            # Extract dog IDs
+            dog_ids = [col for col in df.columns if 'x' in str(col).lower()]
+            self.haversine_matrix = df.loc[df.index.isin(dog_ids), dog_ids]
+            
+            print(f"✅ Loaded haversine matrix for {len(self.haversine_matrix)} dogs")
+            return True
+            
+        except Exception as e:
+            print(f"⚠️ Could not load haversine matrix (not critical): {e}")
+            return False
+
     def get_dogs_to_reassign(self):
         """Find dogs that need reassignment (callouts) - excluding non-dog entries"""
         dogs_to_reassign = []
@@ -462,11 +506,6 @@ class DogReassignmentSystem:
                     distance = self.distance_matrix.loc[dog1_id, dog2_id]
                     if not pd.isna(distance):
                         return float(distance)
-                    else:
-                        print(f"⚠️ NaN in matrix for {dog1_id} → {dog2_id}, using haversine fallback")
-        # Debug output when using fallback
-        if fallback_used:
-            print(f"⚠️ Haversine fallback used: {callout_dog['dog_name']} → {driver} = {haversine_miles:.1f} mi → {distance:.0f} min")
             
             # Fallback: Try haversine matrix if available
             if self.haversine_matrix is not None:
@@ -475,60 +514,16 @@ class DogReassignmentSystem:
                     if not pd.isna(haversine_miles):
                         # Convert miles to minutes
                         minutes = float(haversine_miles) * self.MILES_TO_MINUTES_FACTOR
-                        print(f"📏 Haversine fallback: {dog1_id} → {dog2_id} = {haversine_miles:.1f} mi → {minutes:.0f} min")
+                        # Only print for reasonable distances (not placeholders)
+                        if haversine_miles < 50:  # Reasonable distance threshold
+                            print(f"📏 Haversine fallback: {dog1_id} → {dog2_id} = {haversine_miles:.1f} mi → {minutes:.0f} min")
                         return minutes
             
             # If both matrices fail, return infinity
-            print(f"❌ No distance found for {dog1_id} → {dog2_id} in either matrix")
             return float('inf')
             
         except Exception as e:
-            print(f"⚠️ Error getting distance: {e}")
             return float('inf')
-    
-    def load_haversine_matrix(self, url=None, sheet_id=None, gid=None):
-        """Load haversine distance matrix as fallback (optional)"""
-        try:
-            print("📊 Loading haversine distance matrix (fallback)...")
-            
-            # You can either provide a URL or sheet details
-            if url:
-                response = requests.get(url, timeout=30)
-                response.raise_for_status()
-                from io import StringIO
-                df = pd.read_csv(StringIO(response.text), index_col=0)
-            elif sheet_id and self.sheets_client:
-                # Load via API
-                spreadsheet = self.sheets_client.open_by_key(sheet_id)
-                worksheet = spreadsheet.get_worksheet(0) if not gid else None
-                
-                if gid:
-                    for ws in spreadsheet.worksheets():
-                        if str(ws.id) == str(gid):
-                            worksheet = ws
-                            break
-                
-                all_values = worksheet.get_all_values()
-                df = pd.DataFrame(all_values[1:], columns=all_values[0])
-                df = df.set_index(df.columns[0])
-                
-                # Convert to numeric
-                for col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-            else:
-                print("⚠️ No haversine matrix URL or sheet ID provided")
-                return False
-            
-            # Extract dog IDs
-            dog_ids = [col for col in df.columns if 'x' in str(col).lower()]
-            self.haversine_matrix = df.loc[df.index.isin(dog_ids), dog_ids]
-            
-            print(f"✅ Loaded haversine matrix for {len(self.haversine_matrix)} dogs")
-            return True
-            
-        except Exception as e:
-            print(f"⚠️ Could not load haversine matrix (not critical): {e}")
-            return False
 
     def calculate_driver_load(self, driver_name: str, current_assignments: List = None) -> Dict:
         """Calculate current load for a driver across all groups - FIXED VERSION"""
