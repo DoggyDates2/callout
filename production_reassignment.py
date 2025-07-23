@@ -68,6 +68,7 @@ class DogReassignmentSystem:
         self.dog_assignments = None
         self.driver_capacities = None
         self.sheets_client = None
+        self.called_out_drivers = set()  # Track drivers who called out
 
     def setup_google_sheets_client(self):
         """Setup Google Sheets API client using service account credentials"""
@@ -407,9 +408,10 @@ class DogReassignmentSystem:
     def get_dogs_to_reassign(self):
         """Find dogs that need reassignment (callouts) - excluding non-dog entries"""
         dogs_to_reassign = []
+        called_out_drivers = set()  # Track drivers who called out
         
         if not self.dog_assignments:
-            return dogs_to_reassign
+            return dogs_to_reassign, called_out_drivers
         
         print(f"🔍 DEBUG: Checking {len(self.dog_assignments)} total assignments for callouts...")
         
@@ -461,6 +463,8 @@ class DogReassignmentSystem:
                         'original_callout': assignment['callout'],
                         'original_driver': original_driver
                     })
+                    # Track this driver as called out
+                    called_out_drivers.add(original_driver)
                 else:
                     print(f"   ⚠️ No groups found for {assignment.get('dog_id', 'UNKNOWN')}: '{full_assignment_string}'")
                     no_groups += 1
@@ -479,6 +483,12 @@ class DogReassignmentSystem:
             print(f"     Original: {dog['original_callout']}")  
             print(f"     Assignment string: '{dog['full_assignment_string']}'")
             print(f"     Capacity needed in groups: {dog['needed_groups']}")
+        
+        if called_out_drivers:
+            print(f"\n🚫 Drivers who called out (will be excluded): {', '.join(sorted(called_out_drivers))}")
+        
+        # Store called out drivers in the class
+        self.called_out_drivers = called_out_drivers
         
         return dogs_to_reassign
 
@@ -951,6 +961,10 @@ class DogReassignmentSystem:
             if target_driver == dog_to_move.get('driver'):
                 continue
             
+            # CRITICAL: Skip drivers who called out!
+            if hasattr(self, 'called_out_drivers') and target_driver in self.called_out_drivers:
+                continue
+            
             # Calculate distance
             distance = self.get_distance(dog_to_move['dog_id'], assignment['dog_id'])
             
@@ -1009,6 +1023,8 @@ class DogReassignmentSystem:
         print(f"🐕 Processing {len(dogs_remaining)} callout dogs")
         
         print(f"\n📍 STEP 1: Direct assignments at ≤{self.PREFERRED_TIME} minutes")
+        if hasattr(self, 'called_out_drivers') and self.called_out_drivers:
+            print(f"   🚫 Excluding called-out drivers: {', '.join(sorted(self.called_out_drivers))}")
         
         dogs_assigned_step1 = []
         for callout_dog in dogs_remaining[:]:
@@ -1018,6 +1034,11 @@ class DogReassignmentSystem:
             # Check all drivers for direct assignment
             for assignment in current_assignments:
                 driver = assignment['driver']
+                
+                # CRITICAL: Skip drivers who called out!
+                if hasattr(self, 'called_out_drivers') and driver in self.called_out_drivers:
+                    continue
+                
                 distance = self.get_distance(callout_dog['dog_id'], assignment['dog_id'])
                 
                 # Skip obvious placeholders
@@ -1080,6 +1101,11 @@ class DogReassignmentSystem:
                 
                 for assignment in current_assignments:
                     driver = assignment['driver']
+                    
+                    # CRITICAL: Skip drivers who called out!
+                    if hasattr(self, 'called_out_drivers') and driver in self.called_out_drivers:
+                        continue
+                    
                     distance = self.get_distance(callout_dog['dog_id'], assignment['dog_id'])
                     
                     # Skip obvious placeholders
@@ -1182,6 +1208,11 @@ class DogReassignmentSystem:
                 
                 for assignment in current_assignments:
                     driver = assignment['driver']
+                    
+                    # CRITICAL: Skip drivers who called out!
+                    if hasattr(self, 'called_out_drivers') and driver in self.called_out_drivers:
+                        continue
+                    
                     distance = self.get_distance(callout_dog['dog_id'], assignment['dog_id'])
                     
                     # Skip obvious placeholders
@@ -1240,6 +1271,11 @@ class DogReassignmentSystem:
                     
                     for assignment in current_assignments:
                         driver = assignment['driver']
+                        
+                        # CRITICAL: Skip drivers who called out!
+                        if hasattr(self, 'called_out_drivers') and driver in self.called_out_drivers:
+                            continue
+                        
                         distance = self.get_distance(callout_dog['dog_id'], assignment['dog_id'])
                         
                         # Skip obvious placeholders
