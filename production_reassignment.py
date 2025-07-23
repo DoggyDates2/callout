@@ -1,6 +1,6 @@
-# production_reassignment_with_cleanup.py
-# COMPLETE WORKING VERSION: Locality-first with strategic cascading and aggressive capacity cleanup
-# WITH ALL CAPACITY TRACKING FIXES
+# production_reassignment_time_based.py
+# COMPLETE WORKING VERSION: Locality-first with time-based constraints (3-7 minutes)
+# Drive time instead of miles, with VERY tight constraints
 
 import pandas as pd
 import numpy as np
@@ -18,21 +18,27 @@ import re
 
 class DogReassignmentSystem:
     def __init__(self):
-        """Initialize the dog reassignment system"""
+        """Initialize the dog reassignment system with time-based constraints"""
         # Google Sheets URLs (CSV export format)
         self.DISTANCE_MATRIX_URL = "https://docs.google.com/spreadsheets/d/1421xCS86YH6hx0RcuZCyXkyBK_xl-VDSlXyDNvw09Pg/export?format=csv&gid=398422902"
         self.MAP_SHEET_URL = "https://docs.google.com/spreadsheets/d/1mg8d5CLxSR54KhNUL8SpL5jzrGN-bghTsC9vxSK8lR0/export?format=csv&gid=267803750"
         
-        # DISTANCE LIMITS - LOCALITY-FIRST THRESHOLDS
-        self.PREFERRED_DISTANCE = 0.2  # Ideal assignments: immediate proximity
-        self.MAX_DISTANCE = 0.5  # Backup assignments: reasonable with moves
-        self.ABSOLUTE_MAX_DISTANCE = 1.5  # Search limit for locality-first algorithm (EXTENDED!)
-        self.CASCADING_MOVE_MAX = 0.7  # Max distance for strategic cascading moves (INCREASED!)
-        self.ADJACENT_GROUP_DISTANCE = 0.1  # Base adjacent group distance (scales with radius)
-        self.EXCLUSION_DISTANCE = 200.0  # Temporarily increased from 100.0 to see if 100 is placeholder
+        # TIME LIMITS - LOCALITY-FIRST THRESHOLDS (in minutes)
+        self.PREFERRED_TIME = 3          # Ideal assignments: ≤3 min drive
+        self.MAX_TIME = 5                # Backup assignments: ≤5 min drive
+        self.ABSOLUTE_MAX_TIME = 7       # Search limit: ≤7 min drive (VERY TIGHT!)
+        self.CASCADING_MOVE_MAX_TIME = 6  # Max time for cascading moves
+        self.ADJACENT_GROUP_TIME = 2     # Base adjacent group time (scales with radius)
+        self.EXCLUSION_TIME = 100.0      # Skip if >100 minutes (clearly placeholder)
         
-        # Legacy thresholds for compatibility
-        self.GREEDY_WALK_MAX_DISTANCE = 0.5
+        # Legacy naming for minimal code changes
+        self.PREFERRED_DISTANCE = self.PREFERRED_TIME
+        self.MAX_DISTANCE = self.MAX_TIME
+        self.ABSOLUTE_MAX_DISTANCE = self.ABSOLUTE_MAX_TIME
+        self.CASCADING_MOVE_MAX = self.CASCADING_MOVE_MAX_TIME
+        self.ADJACENT_GROUP_DISTANCE = self.ADJACENT_GROUP_TIME
+        self.EXCLUSION_DISTANCE = self.EXCLUSION_TIME
+        self.GREEDY_WALK_MAX_DISTANCE = self.MAX_TIME
         
         # Data containers
         self.distance_matrix = None
@@ -71,9 +77,9 @@ class DogReassignmentSystem:
             return False
 
     def load_distance_matrix(self):
-        """Load distance matrix data from Google Sheets"""
+        """Load distance matrix data from Google Sheets (now in MINUTES)"""
         try:
-            print("📊 Loading distance matrix...")
+            print("📊 Loading distance matrix (DRIVE TIME in minutes)...")
             
             # Fetch CSV data
             response = requests.get(self.DISTANCE_MATRIX_URL)
@@ -93,7 +99,17 @@ class DogReassignmentSystem:
             dog_df = df.loc[df.index.isin(dog_ids), dog_ids]
             
             self.distance_matrix = dog_df
-            print(f"✅ Loaded distance matrix for {len(self.distance_matrix)} dogs")
+            print(f"✅ Loaded time matrix for {len(self.distance_matrix)} dogs")
+            
+            # DEBUG: Check some sample values to confirm they're in minutes
+            print("\n🔍 DEBUG: Sample drive time values (should be in MINUTES):")
+            sample_dogs = list(self.distance_matrix.index)[:5]
+            for i, dog1 in enumerate(sample_dogs[:3]):
+                for dog2 in sample_dogs[i+1:i+3]:
+                    if dog2 in self.distance_matrix.columns:
+                        value = self.distance_matrix.loc[dog1, dog2]
+                        if not pd.isna(value):
+                            print(f"   {dog1} → {dog2}: {value:.0f} minutes")
             
             return True
             
@@ -314,7 +330,7 @@ class DogReassignmentSystem:
             return []
 
     def get_distance(self, dog1_id: str, dog2_id: str) -> float:
-        """Get distance between two dogs using the distance matrix (reverted - no filtering)"""
+        """Get drive time between two dogs using the distance matrix (in MINUTES)"""
         try:
             if self.distance_matrix is None:
                 return float('inf')
@@ -328,7 +344,6 @@ class DogReassignmentSystem:
         except Exception as e:
             return float('inf')
 
-    # ========== CAPACITY FIX 1: Calculate driver load with duplicate tracking ==========
     def calculate_driver_load(self, driver_name: str, current_assignments: List = None) -> Dict:
         """Calculate current load for a driver across all groups - FIXED VERSION"""
         load = {'group1': 0, 'group2': 0, 'group3': 0}
@@ -394,7 +409,6 @@ class DogReassignmentSystem:
         
         return load
 
-    # ========== CAPACITY FIX 2: Build clean initial state ==========
     def build_initial_assignments_state(self):
         """Build clean initial current_assignments state without duplicates"""
         current_assignments = []
@@ -431,7 +445,6 @@ class DogReassignmentSystem:
         print(f"✅ Built state with {len(current_assignments)} unique assignments")
         return current_assignments
 
-    # ========== CAPACITY FIX 3: Safe assignment method ==========
     def make_assignment_safely(self, callout_dog, driver, current_assignments, assignment_type='direct'):
         """Safely make an assignment ensuring no duplicates and capacity is respected"""
         # First, remove any existing entries for this dog
@@ -469,7 +482,6 @@ class DogReassignmentSystem:
         
         return capacity_ok
 
-    # ========== CAPACITY FIX 4: Check capacity before assignment ==========
     def check_driver_can_accept(self, driver_name, callout_dog, current_assignments):
         """Check if a driver can accept a dog without violating capacity"""
         current_load = self.calculate_driver_load(driver_name, current_assignments)
@@ -486,7 +498,6 @@ class DogReassignmentSystem:
         
         return True
 
-    # ========== CAPACITY FIX 5: Verification method ==========
     def verify_capacity_constraints(self, current_assignments):
         """Verify that all capacity constraints are satisfied"""
         violations = []
@@ -549,8 +560,8 @@ class DogReassignmentSystem:
             adjacent_threshold = current_radius * 0.75  # 75% of current radius
         else:
             # FALLBACK: For diagnostics when no radius provided, use generous limits
-            perfect_threshold = 1.5  # Up to 1.5 miles for exact matches
-            adjacent_threshold = 1.125  # Up to 1.125 miles (75% of 1.5) for adjacent groups
+            perfect_threshold = self.ABSOLUTE_MAX_TIME  # Up to 7 minutes for exact matches
+            adjacent_threshold = self.ABSOLUTE_MAX_TIME * 0.75  # Up to ~5 minutes for adjacent groups
         
         # 1. PERFECT MATCH - same groups
         if callout_set.intersection(driver_set):
@@ -571,9 +582,7 @@ class DogReassignmentSystem:
         return [assignment for assignment in current_assignments 
                 if assignment.get('driver') == driver_name]
 
-    # ========== STRATEGIC CASCADING METHODS ==========
-
-    def attempt_strategic_cascading_move(self, blocked_driver, callout_dog, current_assignments, max_search_radius=0.7):
+    def attempt_strategic_cascading_move(self, blocked_driver, callout_dog, current_assignments, max_search_radius=6):
         """STRATEGIC: Target specific groups with incremental radius expansion"""
         print(f"🎯 ATTEMPTING STRATEGIC CASCADING MOVE for {callout_dog['dog_name']} → {blocked_driver}")
         
@@ -603,11 +612,11 @@ class DogReassignmentSystem:
             if move_result:
                 print(f"   ✅ STRATEGIC MOVE SUCCESSFUL!")
                 print(f"      📦 Moved: {dog_to_move['dog_name']} → {move_result['to_driver']}")
-                print(f"      📏 Distance: {move_result['distance']:.3f}mi (found at radius {move_result['radius']}mi)")
+                print(f"      📏 Distance: {move_result['distance']:.0f} min (found at radius {move_result['radius']} min)")
                 print(f"      🎯 This frees {blocked_groups} capacity in {blocked_driver}")
                 return move_result
             else:
-                print(f"   ❌ Could not move {dog_to_move['dog_name']} within {max_search_radius}mi")
+                print(f"   ❌ Could not move {dog_to_move['dog_name']} within {max_search_radius} min")
         
         print(f"   ❌ STRATEGIC CASCADING FAILED - no dogs could be relocated")
         return None
@@ -668,7 +677,6 @@ class DogReassignmentSystem:
         
         return prioritized
 
-    # ========== CAPACITY FIX 6: Fixed cascading move method ==========
     def _attempt_incremental_move(self, dog_to_move, current_assignments, max_radius):
         """Try to move a dog using incremental radius expansion - FIXED VERSION"""
         print(f"     🔍 Using incremental radius search for {dog_to_move['dog_name']}...")
@@ -688,19 +696,19 @@ class DogReassignmentSystem:
             print(f"     ❌ Could not find current driver for {dog_to_move['dog_name']}")
             return None
         
-        # Start at 0.2mi and expand incrementally
-        current_radius = 0.2
+        # Start at 3 minutes and expand incrementally
+        current_radius = 3
         
         while current_radius <= max_radius:
-            print(f"       📏 Trying radius {current_radius}mi...")
+            print(f"       📏 Trying radius {current_radius} minutes...")
             
             # Find all potential targets within current radius
             targets = self._find_move_targets_at_radius(dog_to_move, current_assignments, current_radius)
             
             if targets:
-                print(f"       ✅ Found {len(targets)} targets at {current_radius}mi:")
+                print(f"       ✅ Found {len(targets)} targets at {current_radius} min:")
                 for i, target in enumerate(targets[:3]):  # Show top 3
-                    print(f"         {i+1}. {target['driver']} - {target['distance']:.3f}mi")
+                    print(f"         {i+1}. {target['driver']} - {target['distance']:.0f} min")
                 
                 # Use the closest target
                 best_target = targets[0]
@@ -743,13 +751,12 @@ class DogReassignmentSystem:
                     'radius': current_radius
                 }
             else:
-                print(f"       ❌ No targets at {current_radius}mi")
+                print(f"       ❌ No targets at {current_radius} minutes")
             
-            # Expand radius
-            current_radius += 0.1
-            current_radius = round(current_radius, 1)  # Avoid floating point issues
+            # Expand radius by 1 minute
+            current_radius += 1
         
-        print(f"     ❌ No targets found within {max_radius}mi")
+        print(f"     ❌ No targets found within {max_radius} minutes")
         return None
 
     def _find_move_targets_at_radius(self, dog_to_move, current_assignments, radius):
@@ -767,7 +774,7 @@ class DogReassignmentSystem:
             distance = self.get_distance(dog_to_move['dog_id'], assignment['dog_id'])
             
             # Skip if beyond current radius
-            if distance > radius or distance >= 100.0:  # Skip placeholders
+            if distance > radius or distance >= self.EXCLUSION_TIME:  # Skip placeholders
                 continue
             
             # Check group compatibility with current radius
@@ -789,17 +796,16 @@ class DogReassignmentSystem:
         # Sort by distance (closest first)
         return sorted(targets, key=lambda x: x['distance'])
 
-    # ========== MAIN LOCALITY-FIRST ALGORITHM ==========
-
     def locality_first_assignment(self):
-        """Locality-first assignment algorithm with strategic cascading and 1.5 mile range - WITH CAPACITY FIXES"""
+        """Locality-first assignment algorithm with strategic cascading and TIGHT time constraints"""
         print("\n🎯 LOCALITY-FIRST ASSIGNMENT ALGORITHM WITH STRATEGIC CASCADING")
         print("🔄 Step-by-step proximity optimization with strategic cascading moves")
-        print("📏 Starting at 0.2mi, expanding to 1.5mi in 0.1mi increments")
+        print("📏 Starting at 3 min, expanding to 7 min in 1 min increments")
         print("🔄 Adjacent groups scale with radius (75% of current radius)")
         print("🎯 STRATEGIC CASCADING: Target specific blocked groups with incremental radius")
-        print("🚶 Cascading moves up to 0.7mi with radius expansion (0.2→0.3→0.4→etc.)")
-        print("🎯 EXTENDED RANGE: Exact matches up to 1.5mi, adjacent up to 1.125mi")
+        print("🚶 Cascading moves up to 6 min with radius expansion (3→4→5→6)")
+        print("🎯 TIGHT CONSTRAINTS: Exact matches up to 7 min, adjacent up to ~5 min")
+        print("⚠️ WARNING: Very tight constraints may result in unassigned dogs!")
         print("=" * 80)
         
         dogs_to_reassign = self.get_dogs_to_reassign()
@@ -808,7 +814,7 @@ class DogReassignmentSystem:
             print("✅ No callouts detected - all dogs have drivers assigned!")
             return []
         
-        # CAPACITY FIX: Build clean initial state
+        # Build clean initial state
         current_assignments = self.build_initial_assignments_state()
         
         # Add initial verification
@@ -821,7 +827,7 @@ class DogReassignmentSystem:
         
         print(f"🐕 Processing {len(dogs_remaining)} callout dogs")
         
-        print(f"\n📍 STEP 1: Direct assignments at ≤{self.PREFERRED_DISTANCE}mi")
+        print(f"\n📍 STEP 1: Direct assignments at ≤{self.PREFERRED_TIME} minutes")
         
         dogs_assigned_step1 = []
         for callout_dog in dogs_remaining[:]:
@@ -834,14 +840,14 @@ class DogReassignmentSystem:
                 distance = self.get_distance(callout_dog['dog_id'], assignment['dog_id'])
                 
                 # Skip obvious placeholders
-                if distance >= 100.0:
+                if distance >= self.EXCLUSION_TIME:
                     continue
                 
                 # Check group compatibility with distance requirements
-                if not self.check_group_compatibility(callout_dog['needed_groups'], assignment['needed_groups'], distance, self.PREFERRED_DISTANCE):
+                if not self.check_group_compatibility(callout_dog['needed_groups'], assignment['needed_groups'], distance, self.PREFERRED_TIME):
                     continue
                 
-                # CAPACITY FIX: Use new check method
+                # Check capacity
                 if self.check_driver_can_accept(driver, callout_dog, current_assignments):
                     if distance < best_distance:
                         best_assignment = {
@@ -856,7 +862,7 @@ class DogReassignmentSystem:
                 driver = best_assignment['driver']
                 distance = best_assignment['distance']
                 
-                # CAPACITY FIX: Use safe assignment method
+                # Use safe assignment method
                 if self.make_assignment_safely(callout_dog, driver, current_assignments):
                     assignment_record = {
                         'dog_id': callout_dog['dog_id'],
@@ -870,7 +876,7 @@ class DogReassignmentSystem:
                     
                     assignments_made.append(assignment_record)
                     dogs_assigned_step1.append(callout_dog)
-                    print(f"   ✅ {callout_dog['dog_name']} → {driver} ({distance:.1f}mi)")
+                    print(f"   ✅ {callout_dog['dog_name']} → {driver} ({distance:.0f} min)")
         
         # Remove assigned dogs
         for dog in dogs_assigned_step1:
@@ -878,13 +884,13 @@ class DogReassignmentSystem:
         
         print(f"   📊 Step 1 results: {len(dogs_assigned_step1)} direct assignments")
         
-        # CAPACITY FIX: Verify after step 1
+        # Verify after step 1
         print("\n📊 After Step 1 capacity check:")
         self.verify_capacity_constraints(current_assignments)
         
         # Step 2: Capacity-blocked assignments with strategic cascading moves
         if dogs_remaining:
-            print(f"\n🎯 STEP 2: Strategic cascading moves to free space at ≤{self.PREFERRED_DISTANCE}mi")
+            print(f"\n🎯 STEP 2: Strategic cascading moves to free space at ≤{self.PREFERRED_TIME} minutes")
             
             dogs_assigned_step2 = []
             for callout_dog in dogs_remaining[:]:
@@ -896,11 +902,11 @@ class DogReassignmentSystem:
                     distance = self.get_distance(callout_dog['dog_id'], assignment['dog_id'])
                     
                     # Skip obvious placeholders
-                    if distance >= 100.0:
+                    if distance >= self.EXCLUSION_TIME:
                         continue
                     
                     # Check group compatibility
-                    if not self.check_group_compatibility(callout_dog['needed_groups'], assignment['needed_groups'], distance, self.PREFERRED_DISTANCE):
+                    if not self.check_group_compatibility(callout_dog['needed_groups'], assignment['needed_groups'], distance, self.PREFERRED_TIME):
                         continue
                     
                     # Check if blocked by capacity
@@ -915,12 +921,12 @@ class DogReassignmentSystem:
                     blocked_drivers.sort(key=lambda x: x['distance'])
                     best_blocked = blocked_drivers[0]
                     
-                    # 🎯 STRATEGIC CASCADING: Use strategic approach
+                    # STRATEGIC CASCADING: Use strategic approach
                     move_result = self.attempt_strategic_cascading_move(
                         best_blocked['driver'], 
                         callout_dog, 
                         current_assignments, 
-                        self.CASCADING_MOVE_MAX  # 0.7mi max search with incremental expansion
+                        self.CASCADING_MOVE_MAX_TIME  # 6 min max search with incremental expansion
                     )
                     
                     if move_result:
@@ -934,7 +940,7 @@ class DogReassignmentSystem:
                             'reason': f"strategic_free_space_for_{callout_dog['dog_name']}"
                         })
                         
-                        # 🎯 CRITICAL FIX: Update any existing assignments for moved dog
+                        # Update any existing assignments for moved dog
                         moved_dog_id = move_result['moved_dog']['dog_id']
                         for existing_assignment in assignments_made:
                             if existing_assignment['dog_id'] == moved_dog_id:
@@ -951,7 +957,7 @@ class DogReassignmentSystem:
                         driver = best_blocked['driver']
                         distance = best_blocked['distance']
                         
-                        # CAPACITY FIX: Use safe assignment
+                        # Use safe assignment
                         if self.make_assignment_safely(callout_dog, driver, current_assignments):
                             assignment_record = {
                                 'dog_id': callout_dog['dog_id'],
@@ -965,8 +971,8 @@ class DogReassignmentSystem:
                             
                             assignments_made.append(assignment_record)
                             dogs_assigned_step2.append(callout_dog)
-                            print(f"   ✅ {callout_dog['dog_name']} → {driver} ({distance:.1f}mi)")
-                            print(f"      🎯 Strategic move: {move_result['moved_dog']['dog_name']} → {move_result['to_driver']} ({move_result['distance']:.1f}mi at radius {move_result['radius']}mi)")
+                            print(f"   ✅ {callout_dog['dog_name']} → {driver} ({distance:.0f} min)")
+                            print(f"      🎯 Strategic move: {move_result['moved_dog']['dog_name']} → {move_result['to_driver']} ({move_result['distance']:.0f} min at radius {move_result['radius']} min)")
             
             # Remove assigned dogs
             for dog in dogs_assigned_step2:
@@ -974,17 +980,17 @@ class DogReassignmentSystem:
             
             print(f"   📊 Step 2 results: {len(dogs_assigned_step2)} strategic cascading assignments")
             
-            # CAPACITY FIX: Verify after step 2
+            # Verify after step 2
             print("\n📊 After Step 2 capacity check:")
             self.verify_capacity_constraints(current_assignments)
         
-        # Step 3+: Incremental radius expansion (0.3 to 1.5 miles)
-        current_radius = 0.3
+        # Step 3+: Incremental radius expansion (4 to 7 minutes)
+        current_radius = 4
         step_number = 3
         
-        while current_radius <= self.ABSOLUTE_MAX_DISTANCE and dogs_remaining:
-            print(f"\n📏 STEP {step_number}: Radius expansion to ≤{current_radius}mi")
-            print(f"   🎯 Thresholds: Perfect match ≤{current_radius}mi, Adjacent groups ≤{current_radius*0.75:.2f}mi")
+        while current_radius <= self.ABSOLUTE_MAX_TIME and dogs_remaining:
+            print(f"\n📏 STEP {step_number}: Radius expansion to ≤{current_radius} minutes")
+            print(f"   🎯 Thresholds: Perfect match ≤{current_radius} min, Adjacent groups ≤{current_radius*0.75:.0f} min")
             
             dogs_assigned_this_radius = []
             
@@ -998,7 +1004,7 @@ class DogReassignmentSystem:
                     distance = self.get_distance(callout_dog['dog_id'], assignment['dog_id'])
                     
                     # Skip obvious placeholders
-                    if distance >= 100.0:
+                    if distance >= self.EXCLUSION_TIME:
                         continue
                     
                     if distance > current_radius:
@@ -1008,7 +1014,7 @@ class DogReassignmentSystem:
                     if not self.check_group_compatibility(callout_dog['needed_groups'], assignment['needed_groups'], distance, current_radius):
                         continue
                     
-                    # CAPACITY FIX: Check capacity
+                    # Check capacity
                     if self.check_driver_can_accept(driver, callout_dog, current_assignments):
                         if distance < best_distance:
                             best_assignment = {
@@ -1024,14 +1030,14 @@ class DogReassignmentSystem:
                     distance = best_assignment['distance']
                     
                     # Determine quality with 3-way check
-                    if distance <= self.PREFERRED_DISTANCE:
+                    if distance <= self.PREFERRED_TIME:
                         quality = 'GOOD'
-                    elif distance <= self.MAX_DISTANCE:
+                    elif distance <= self.MAX_TIME:
                         quality = 'BACKUP'
                     else:
                         quality = 'EMERGENCY'
                     
-                    # CAPACITY FIX: Use safe assignment
+                    # Use safe assignment
                     if self.make_assignment_safely(callout_dog, driver, current_assignments):
                         assignment_record = {
                             'dog_id': callout_dog['dog_id'],
@@ -1045,7 +1051,7 @@ class DogReassignmentSystem:
                         
                         assignments_made.append(assignment_record)
                         dogs_assigned_this_radius.append(callout_dog)
-                        print(f"   ✅ {callout_dog['dog_name']} → {driver} ({distance:.1f}mi) [{quality}]")
+                        print(f"   ✅ {callout_dog['dog_name']} → {driver} ({distance:.0f} min) [{quality}]")
                 
                 else:
                     # Try strategic cascading moves at current radius
@@ -1056,7 +1062,7 @@ class DogReassignmentSystem:
                         distance = self.get_distance(callout_dog['dog_id'], assignment['dog_id'])
                         
                         # Skip obvious placeholders
-                        if distance >= 100.0:
+                        if distance >= self.EXCLUSION_TIME:
                             continue
                         
                         if distance > current_radius:
@@ -1077,12 +1083,12 @@ class DogReassignmentSystem:
                         blocked_drivers.sort(key=lambda x: x['distance'])
                         best_blocked = blocked_drivers[0]
                         
-                        # 🎯 STRATEGIC CASCADING: Use current radius as max search distance
+                        # STRATEGIC CASCADING: Use current radius as max search distance
                         move_result = self.attempt_strategic_cascading_move(
                             best_blocked['driver'], 
                             callout_dog, 
                             current_assignments, 
-                            current_radius  # Use current search radius for strategic cascading
+                            min(current_radius, self.CASCADING_MOVE_MAX_TIME)  # Cap at 6 min
                         )
                         
                         if move_result:
@@ -1101,14 +1107,14 @@ class DogReassignmentSystem:
                             distance = best_blocked['distance']
                             
                             # Determine quality with 3-way check
-                            if distance <= self.PREFERRED_DISTANCE:
+                            if distance <= self.PREFERRED_TIME:
                                 quality = 'GOOD'
-                            elif distance <= self.MAX_DISTANCE:
+                            elif distance <= self.MAX_TIME:
                                 quality = 'BACKUP'
                             else:
                                 quality = 'EMERGENCY'
                             
-                            # CAPACITY FIX: Use safe assignment
+                            # Use safe assignment
                             if self.make_assignment_safely(callout_dog, driver, current_assignments):
                                 assignment_record = {
                                     'dog_id': callout_dog['dog_id'],
@@ -1122,21 +1128,22 @@ class DogReassignmentSystem:
                                 
                                 assignments_made.append(assignment_record)
                                 dogs_assigned_this_radius.append(callout_dog)
-                                print(f"   ✅ {callout_dog['dog_name']} → {driver} ({distance:.1f}mi) [{quality}]")
-                                print(f"      🎯 Strategic move: {move_result['moved_dog']['dog_name']} → {move_result['to_driver']} ({move_result['distance']:.1f}mi at radius {move_result['radius']}mi)")
+                                print(f"   ✅ {callout_dog['dog_name']} → {driver} ({distance:.0f} min) [{quality}]")
+                                print(f"      🎯 Strategic move: {move_result['moved_dog']['dog_name']} → {move_result['to_driver']} ({move_result['distance']:.0f} min at radius {move_result['radius']} min)")
             
             # Remove assigned dogs
             for dog in dogs_assigned_this_radius:
                 dogs_remaining.remove(dog)
             
-            print(f"   📊 Radius {current_radius}mi results: {len(dogs_assigned_this_radius)} assignments")
+            print(f"   📊 Radius {current_radius} min results: {len(dogs_assigned_this_radius)} assignments")
             
-            current_radius += 0.1
+            current_radius += 1  # Increment by 1 minute
             step_number += 1
         
         # Final step: Mark remaining as emergency
         if dogs_remaining:
-            print(f"\n🚨 FINAL STEP: {len(dogs_remaining)} remaining dogs marked as EMERGENCY")
+            print(f"\n🚨 FINAL STEP: {len(dogs_remaining)} remaining dogs marked as UNASSIGNED")
+            print("⚠️ These dogs could not be assigned within the 7 minute constraint!")
             
             for callout_dog in dogs_remaining:
                 assignment_record = {
@@ -1149,12 +1156,12 @@ class DogReassignmentSystem:
                     'assignment_type': 'failed'
                 }
                 assignments_made.append(assignment_record)
-                print(f"   ❌ {callout_dog['dog_name']} - No viable assignment found")
+                print(f"   ❌ {callout_dog['dog_name']} - No viable assignment found within 7 minutes")
         
         # Store moves for writing
         self.greedy_moves_made = moves_made
         
-        # CAPACITY FIX: Final verification
+        # Final verification
         print("\n📊 FINAL capacity verification:")
         violations = self.verify_capacity_constraints(current_assignments)
         
@@ -1167,31 +1174,38 @@ class DogReassignmentSystem:
         good_count = len([a for a in assignments_made if a['quality'] == 'GOOD'])
         backup_count = len([a for a in assignments_made if a['quality'] == 'BACKUP'])
         emergency_count = len([a for a in assignments_made if a['quality'] == 'EMERGENCY'])
+        unassigned_count = len([a for a in assignments_made if a['driver'] == 'UNASSIGNED'])
         strategic_moves = len([m for m in moves_made if 'strategic' in m['reason']])
         
-        print(f"\n🏆 LOCALITY-FIRST + STRATEGIC CASCADING RESULTS:")
+        print(f"\n🏆 LOCALITY-FIRST + STRATEGIC CASCADING RESULTS (TIME-BASED):")
         print(f"   📊 {len(assignments_made)}/{total_dogs} dogs processed")
-        print(f"   💚 {good_count} GOOD assignments (≤{self.PREFERRED_DISTANCE}mi)")
-        print(f"   🟡 {backup_count} BACKUP assignments ({self.PREFERRED_DISTANCE}-{self.MAX_DISTANCE}mi)")
-        print(f"   🚨 {emergency_count} EMERGENCY assignments (>{self.MAX_DISTANCE}mi)")
+        print(f"   💚 {good_count} GOOD assignments (≤{self.PREFERRED_TIME} min drive)")
+        print(f"   🟡 {backup_count} BACKUP assignments ({self.PREFERRED_TIME}-{self.MAX_TIME} min drive)")
+        print(f"   🚨 {emergency_count} EMERGENCY assignments (>{self.MAX_TIME} min drive)")
+        print(f"   ❌ {unassigned_count} UNASSIGNED (no driver within 7 minutes)")
         print(f"   🎯 {strategic_moves} strategic cascading moves executed")
         print(f"   🚶 {len(moves_made)} total cascading moves executed")
         print(f"   🎯 Success rate: {(good_count + backup_count)/total_dogs*100:.0f}% practical assignments")
-        print(f"   🎯 Extended range: Exact matches ≤1.5mi, Adjacent groups ≤1.125mi")
+        print(f"   🎯 Tight constraints: Exact matches ≤7 min, Adjacent groups ≤5 min")
         print(f"   🎯 Strategic cascading: Target blocked groups with incremental radius expansion")
         print(f"   ✅ Capacity tracking: Fixed with duplicate prevention")
+        
+        if unassigned_count > 0:
+            print(f"\n⚠️ WARNING: {unassigned_count} dogs could not be assigned within 7 minute limit!")
+            print("   Consider: Adding more drivers, relaxing time constraints, or manual intervention")
         
         return assignments_made
 
     def reassign_dogs_multi_strategy_optimization(self):
-        """Locality-first algorithm with strategic cascading and 1.5 mile range"""
-        print("\n🔄 Starting LOCALITY-FIRST + STRATEGIC CASCADING SYSTEM...")
+        """Locality-first algorithm with strategic cascading and TIGHT time constraints"""
+        print("\n🔄 Starting LOCALITY-FIRST + STRATEGIC CASCADING SYSTEM (TIME-BASED)...")
         print("🎯 Strategy: Proximity-first with strategic group-targeted cascading")
-        print("📊 Quality: GOOD ≤0.2mi, BACKUP ≤0.5mi, EMERGENCY >0.5mi")
+        print("📊 Quality: GOOD ≤3 min, BACKUP ≤5 min, EMERGENCY >5 min")
         print("🚨 Focus: Immediate proximity with strategic dynamic space optimization")
-        print("🎯 EXTENDED RANGE: Up to 1.5mi exact matches, 1.125mi adjacent matches")
-        print("🎯 STRATEGIC CASCADING: Target blocked groups with 0.2→0.3→0.4→etc. radius expansion")
+        print("🎯 TIGHT CONSTRAINTS: Exact matches ≤7 min, Adjacent groups ≤5 min")
+        print("🎯 STRATEGIC CASCADING: Target blocked groups with 3→4→5→6 min radius expansion")
         print("✅ CAPACITY FIXES: Duplicate tracking, safe assignments, continuous verification")
+        print("⚠️ WARNING: Very tight 7 minute limit may result in unassigned dogs!")
         print("=" * 80)
         
         # Try the locality-first algorithm with strategic cascading
@@ -1367,14 +1381,14 @@ class DogReassignmentSystem:
                 success_msg += f" (including {strategic_moves} strategic cascading moves)"
             
             print(success_msg)
-            print(f"🎯 Used locality-first + strategic cascading with 1.5mi range + 75% adjacent")
+            print(f"🎯 Used locality-first + strategic cascading with 7 min time limit")
             print(f"✅ WITH CAPACITY FIXES: Duplicate tracking + safe assignments")
             
             # Send Slack notification
             slack_webhook = os.environ.get('SLACK_WEBHOOK_URL')
             if slack_webhook:
                 try:
-                    message = f"🐕 Dog Reassignment Complete: {updates_count} assignments updated using strategic cascading + 1.5mi range + capacity fixes"
+                    message = f"🐕 Dog Reassignment Complete: {updates_count} assignments updated using strategic cascading + 7 min limit + capacity fixes"
                     slack_message = {"text": message}
                     response = requests.post(slack_webhook, json=slack_message, timeout=10)
                     if response.status_code == 200:
@@ -1393,17 +1407,18 @@ class DogReassignmentSystem:
 
 def main():
     """Main function to run the dog reassignment system with capacity cleanup"""
-    print("🚀 Enhanced Dog Reassignment System - STRATEGIC CASCADING + CAPACITY FIXES")
+    print("🚀 Enhanced Dog Reassignment System - TIME-BASED (3-7 minute constraints)")
     print("🎯 NEW: Strategic group-targeted cascading with incremental radius expansion")
-    print("📏 Main: Starts at 0.2mi, expands to 1.5mi in 0.1mi increments")
+    print("📏 Main: Starts at 3 min, expands to 7 min in 1 min increments")
     print("🔧 Cleanup: Aggressive proximity-focused capacity violation fixes")
     print("🔄 Adjacent groups: 75% of current radius (more generous)")
     print("🎯 STRATEGIC CASCADING: Target blocked groups, not random dogs")
-    print("🚶 Cascading moves up to 0.7mi with incremental radius (0.2→0.3→0.4→etc.)")
+    print("🚶 Cascading moves up to 6 min with incremental expansion (3→4→5→6)")
     print("🧅 Onion-layer backflow pushes outer assignments out to create inner space")
-    print("📊 Quality: GOOD ≤0.2mi, BACKUP ≤0.5mi, EMERGENCY >0.5mi")
-    print("🎯 EXTENDED RANGE: Exact matches ≤1.5mi, Adjacent groups ≤1.125mi")
+    print("📊 Quality: GOOD ≤3 min, BACKUP ≤5 min, EMERGENCY >5 min")
+    print("🎯 TIGHT CONSTRAINTS: Exact matches ≤7 min, Adjacent groups ≤5 min")
     print("✅ CAPACITY FIXES: Duplicate tracking, safe assignments, verification at each step")
+    print("⚠️ WARNING: Very tight constraints may result in unassigned dogs!")
     print("=" * 80)
     
     # Initialize system
@@ -1438,18 +1453,24 @@ def main():
     if reassignments is None:
         reassignments = []
     
+    # Check for unassigned dogs
+    unassigned_count = len([a for a in reassignments if a.get('driver') == 'UNASSIGNED'])
+    if unassigned_count > 0:
+        print(f"\n⚠️ WARNING: {unassigned_count} dogs could not be assigned within 7 minute limit!")
+        print("Consider relaxing constraints or adding more drivers in affected areas.")
+    
     # Write results
     if reassignments:
         write_success = system.write_results_to_sheets(reassignments)
         if write_success:
             print(f"\n🎉 SUCCESS! Processed {len(reassignments)} callout assignments")
-            print(f"✅ Used locality-first + strategic cascading with 1.5mi range + 75% adjacent")
+            print(f"✅ Used locality-first + strategic cascading with 7 min time limit")
             print(f"✅ WITH CAPACITY FIXES: All capacity constraints respected")
             
             # ========== CAPACITY CLEANUP PHASE ==========
             print("\n" + "="*80)
             print("🔧 AGGRESSIVE CAPACITY CLEANUP - Fixing violations with extreme proximity")
-            print("📏 Thresholds: ≤0.5mi direct, ≤0.3mi adjacent, ≤0.6mi cascading")
+            print("📏 Thresholds: ≤5 min direct, ≤3 min adjacent, ≤6 min cascading")
             print("🎯 Goal: 100% close placements, zero tolerance for distant fixes")
             print("="*80)
             
