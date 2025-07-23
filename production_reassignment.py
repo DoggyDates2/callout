@@ -1,6 +1,7 @@
 # production_reassignment_time_based.py
 # COMPLETE WORKING VERSION: Locality-first with time-based constraints (3-7 minutes)
 # Drive time instead of miles, with VERY tight constraints
+# WITH HAVERSINE FALLBACK for missing entries
 
 import pandas as pd
 import numpy as np
@@ -15,6 +16,23 @@ import time
 import random
 from copy import deepcopy
 import re
+
+# ========== HAVERSINE FALLBACK CONFIGURATION ==========
+# If a dog is not found in the drive time matrix, the system can fall back
+# to haversine distances and convert them to estimated drive times
+
+# Option 1: CSV Export URL (if your haversine matrix is publicly accessible)
+HAVERSINE_MATRIX_URL = None  # Example: "https://docs.google.com/spreadsheets/d/ABC123/export?format=csv&gid=0"
+
+# Option 2: Google Sheets API (if using service account)
+HAVERSINE_SHEET_ID = None    # Example: "1421xCS86YH6hx0RcuZCyXkyBK_xl-VDSlXyDNvw09Pg"
+HAVERSINE_GID = None         # Example: "398422902"
+
+# Conversion factor: miles to minutes
+# Urban areas: 3.0 (20 mph average)
+# Suburban areas: 2.5 (24 mph average)  
+# Rural areas: 2.0 (30 mph average)
+MILES_TO_MINUTES_FACTOR = 2.5
 
 class DogReassignmentSystem:
     def __init__(self):
@@ -31,6 +49,10 @@ class DogReassignmentSystem:
         self.ADJACENT_GROUP_TIME = 2     # Base adjacent group time (scales with radius)
         self.EXCLUSION_TIME = 100.0      # Skip if >100 minutes (clearly placeholder)
         
+        # Conversion factor for haversine miles to drive time minutes
+        # Adjust based on your area: urban=3, suburban=2.5, rural=2
+        self.MILES_TO_MINUTES_FACTOR = 2.5
+        
         # Legacy naming for minimal code changes
         self.PREFERRED_DISTANCE = self.PREFERRED_TIME
         self.MAX_DISTANCE = self.MAX_TIME
@@ -42,6 +64,7 @@ class DogReassignmentSystem:
         
         # Data containers
         self.distance_matrix = None
+        self.haversine_matrix = None  # Fallback haversine distances
         self.dog_assignments = None
         self.driver_capacities = None
         self.sheets_client = None
@@ -81,13 +104,112 @@ class DogReassignmentSystem:
         try:
             print("📊 Loading distance matrix (DRIVE TIME in minutes)...")
             
-            # Fetch CSV data
-            response = requests.get(self.DISTANCE_MATRIX_URL)
-            response.raise_for_status()
+            # Try CSV export first (simpler and was working before)
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    # Fetch CSV data
+                    response = requests.get(self.DISTANCE_MATRIX_URL, timeout=30)
+                    response.raise_for_status()
+                    
+                    # Read into DataFrame
+                    from io import StringIO
+                    df = pd.read_csv(StringIO(response.text), index_col=0)
+                    
+                    print(f"📊 Distance matrix shape: ({len(df)}, {len(df.columns)})")
+                    
+                    # Extract dog IDs from columns (skip non-dog columns)
+                    dog_ids = [col for col in df.columns if 'x' in str(col).lower()]
+                    print(f"📊 Found {len(dog_ids)} column Dog IDs")
+                    
+                    # Filter to only dog ID columns and rows
+                    dog_df = df.loc[df.index.isin(dog_ids), dog_ids]
+                    
+                    self.distance_matrix = dog_df
+                    print(f"✅ Loaded time matrix for {len(self.distance_matrix)} dogs")
+                    
+                    # DEBUG: Check some sample values to confirm they're in minutes
+                    print("\n🔍 DEBUG: Sample drive time values (should be in MINUTES):")
+                    sample_dogs = list(self.distance_matrix.index)[:5]
+                    for i, dog1 in enumerate(sample_dogs[:3]):
+                        for dog2 in sample_dogs[i+1:i+3]:
+                            if dog2 in self.distance_matrix.columns:
+                                value = self.distance_matrix.loc[dog1, dog2]
+                                if not pd.isna(value):
+                                    print(f"   {dog1} → {dog2}: {value:.0f} minutes")
+                    
+                    return True
+                    
+                except requests.exceptions.RequestException as e:
+                    if attempt < max_retries - 1:
+                        print(f"⚠️ Attempt {attempt + 1} failed, retrying... ({e})")
+                        time.sleep(2)  # Wait 2 seconds before retry
+                    else:
+                        raise
             
-            # Read into DataFrame
-            from io import StringIO
-            df = pd.read_csv(StringIO(response.text), index_col=0)
+        except Exception as e:
+            print(f"❌ Error loading distance matrix via CSV: {e}")
+            print("🔄 Falling back to Google Sheets API...")
+            
+            # Fall back to API method
+            return self.load_distance_matrix_via_api()
+    
+    def load_distance_matrix_via_api(self):
+        """Load distance matrix using Google Sheets API as fallback"""
+        try:
+            if not self.sheets_client:
+                print("❌ Google Sheets client not initialized")
+                return False
+            
+            # Extract sheet ID from the URL
+            sheet_id = "1421xCS86YH6hx0RcuZCyXkyBK_xl-VDSlXyDNvw09Pg"
+            
+            # Open the spreadsheet
+            spreadsheet = self.sheets_client.open_by_key(sheet_id)
+            
+            # Try to find the correct worksheet
+            worksheet = None
+            
+            # First try by gid
+            try:
+                for ws in spreadsheet.worksheets():
+                    if str(ws.id) == "398422902":
+                        worksheet = ws
+                        print(f"📋 Found worksheet by GID: {ws.title}")
+                        break
+            except:
+                pass
+            
+            # If not found, try common names
+            if not worksheet:
+                sheet_names = ["Distance Matrix", "Drive Time", "Matrix", "Time Matrix", "Sheet1"]
+                for name in sheet_names:
+                    try:
+                        worksheet = spreadsheet.worksheet(name)
+                        print(f"📋 Found worksheet: {name}")
+                        break
+                    except:
+                        continue
+            
+            # If still not found, use first sheet
+            if not worksheet:
+                worksheet = spreadsheet.get_worksheet(0)
+                print(f"📋 Using first worksheet: {worksheet.title}")
+            
+            # Get all values
+            all_values = worksheet.get_all_values()
+            
+            if not all_values:
+                print("❌ No data found in distance matrix")
+                return False
+            
+            # Convert to DataFrame
+            df = pd.DataFrame(all_values[1:], columns=all_values[0])
+            df = df.set_index(df.columns[0])
+            
+            # Convert numeric columns
+            for col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
             
             print(f"📊 Distance matrix shape: ({len(df)}, {len(df.columns)})")
             
@@ -99,7 +221,7 @@ class DogReassignmentSystem:
             dog_df = df.loc[df.index.isin(dog_ids), dog_ids]
             
             self.distance_matrix = dog_df
-            print(f"✅ Loaded time matrix for {len(self.distance_matrix)} dogs")
+            print(f"✅ Loaded time matrix for {len(self.distance_matrix)} dogs via API")
             
             # DEBUG: Check some sample values to confirm they're in minutes
             print("\n🔍 DEBUG: Sample drive time values (should be in MINUTES):")
@@ -114,7 +236,9 @@ class DogReassignmentSystem:
             return True
             
         except Exception as e:
-            print(f"❌ Error loading distance matrix: {e}")
+            print(f"❌ Error loading distance matrix via API: {e}")
+            import traceback
+            print(f"🔍 Full error: {traceback.format_exc()}")
             return False
 
     def load_dog_assignments(self):
@@ -330,19 +454,81 @@ class DogReassignmentSystem:
             return []
 
     def get_distance(self, dog1_id: str, dog2_id: str) -> float:
-        """Get drive time between two dogs using the distance matrix (in MINUTES)"""
+        """Get drive time between two dogs - first try matrix, then fall back to haversine conversion"""
         try:
-            if self.distance_matrix is None:
-                return float('inf')
+            # First try the drive time matrix
+            if self.distance_matrix is not None:
+                if dog1_id in self.distance_matrix.index and dog2_id in self.distance_matrix.columns:
+                    distance = self.distance_matrix.loc[dog1_id, dog2_id]
+                    if not pd.isna(distance):
+                        return float(distance)
+                    else:
+                        print(f"⚠️ NaN in matrix for {dog1_id} → {dog2_id}, using haversine fallback")
+        # Debug output when using fallback
+        if fallback_used:
+            print(f"⚠️ Haversine fallback used: {callout_dog['dog_name']} → {driver} = {haversine_miles:.1f} mi → {distance:.0f} min")
             
-            if dog1_id in self.distance_matrix.index and dog2_id in self.distance_matrix.columns:
-                distance = self.distance_matrix.loc[dog1_id, dog2_id]
-                return float(distance) if not pd.isna(distance) else float('inf')
+            # Fallback: Try haversine matrix if available
+            if self.haversine_matrix is not None:
+                if dog1_id in self.haversine_matrix.index and dog2_id in self.haversine_matrix.columns:
+                    haversine_miles = self.haversine_matrix.loc[dog1_id, dog2_id]
+                    if not pd.isna(haversine_miles):
+                        # Convert miles to minutes
+                        minutes = float(haversine_miles) * self.MILES_TO_MINUTES_FACTOR
+                        print(f"📏 Haversine fallback: {dog1_id} → {dog2_id} = {haversine_miles:.1f} mi → {minutes:.0f} min")
+                        return minutes
             
+            # If both matrices fail, return infinity
+            print(f"❌ No distance found for {dog1_id} → {dog2_id} in either matrix")
             return float('inf')
             
         except Exception as e:
+            print(f"⚠️ Error getting distance: {e}")
             return float('inf')
+    
+    def load_haversine_matrix(self, url=None, sheet_id=None, gid=None):
+        """Load haversine distance matrix as fallback (optional)"""
+        try:
+            print("📊 Loading haversine distance matrix (fallback)...")
+            
+            # You can either provide a URL or sheet details
+            if url:
+                response = requests.get(url, timeout=30)
+                response.raise_for_status()
+                from io import StringIO
+                df = pd.read_csv(StringIO(response.text), index_col=0)
+            elif sheet_id and self.sheets_client:
+                # Load via API
+                spreadsheet = self.sheets_client.open_by_key(sheet_id)
+                worksheet = spreadsheet.get_worksheet(0) if not gid else None
+                
+                if gid:
+                    for ws in spreadsheet.worksheets():
+                        if str(ws.id) == str(gid):
+                            worksheet = ws
+                            break
+                
+                all_values = worksheet.get_all_values()
+                df = pd.DataFrame(all_values[1:], columns=all_values[0])
+                df = df.set_index(df.columns[0])
+                
+                # Convert to numeric
+                for col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            else:
+                print("⚠️ No haversine matrix URL or sheet ID provided")
+                return False
+            
+            # Extract dog IDs
+            dog_ids = [col for col in df.columns if 'x' in str(col).lower()]
+            self.haversine_matrix = df.loc[df.index.isin(dog_ids), dog_ids]
+            
+            print(f"✅ Loaded haversine matrix for {len(self.haversine_matrix)} dogs")
+            return True
+            
+        except Exception as e:
+            print(f"⚠️ Could not load haversine matrix (not critical): {e}")
+            return False
 
     def calculate_driver_load(self, driver_name: str, current_assignments: List = None) -> Dict:
         """Calculate current load for a driver across all groups - FIXED VERSION"""
@@ -1419,10 +1605,14 @@ def main():
     print("🎯 TIGHT CONSTRAINTS: Exact matches ≤7 min, Adjacent groups ≤5 min")
     print("✅ CAPACITY FIXES: Duplicate tracking, safe assignments, verification at each step")
     print("⚠️ WARNING: Very tight constraints may result in unassigned dogs!")
+    print("🔄 FALLBACK: If dog not in drive time matrix, will use haversine × 2.5 min/mile")
     print("=" * 80)
     
     # Initialize system
     system = DogReassignmentSystem()
+    
+    # Set the conversion factor from global config
+    system.MILES_TO_MINUTES_FACTOR = MILES_TO_MINUTES_FACTOR
     
     # Setup Google Sheets client
     if not system.setup_google_sheets_client():
@@ -1435,6 +1625,17 @@ def main():
     if not system.load_distance_matrix():
         print("❌ Failed to load distance matrix")
         return
+    
+    # Optional: Load haversine matrix as fallback
+    if HAVERSINE_MATRIX_URL:
+        print("\n📊 Loading haversine matrix from URL...")
+        system.load_haversine_matrix(url=HAVERSINE_MATRIX_URL)
+    elif HAVERSINE_SHEET_ID:
+        print("\n📊 Loading haversine matrix via Google Sheets API...")
+        system.load_haversine_matrix(sheet_id=HAVERSINE_SHEET_ID, gid=HAVERSINE_GID)
+    else:
+        print("\nℹ️ No haversine matrix configured - fallback disabled")
+        print("   To enable: Set HAVERSINE_MATRIX_URL or HAVERSINE_SHEET_ID at top of script")
     
     if not system.load_dog_assignments():
         print("❌ Failed to load dog assignments")
@@ -1481,9 +1682,14 @@ def main():
                 cleanup = CapacityCleanup()
                 # Copy data instead of reloading
                 cleanup.distance_matrix = system.distance_matrix
+                cleanup.haversine_matrix = system.haversine_matrix  # Also copy haversine if available
                 cleanup.dog_assignments = system.dog_assignments  # Updated assignments
                 cleanup.driver_capacities = system.driver_capacities
                 cleanup.sheets_client = system.sheets_client
+                
+                # Set conversion factor for cleanup too
+                if hasattr(cleanup, 'MILES_TO_MINUTES_FACTOR'):
+                    cleanup.MILES_TO_MINUTES_FACTOR = MILES_TO_MINUTES_FACTOR
                 
                 # Run aggressive cleanup
                 moves = cleanup.fix_capacity_violations()
@@ -1515,9 +1721,14 @@ def main():
             
             cleanup = CapacityCleanup()
             cleanup.distance_matrix = system.distance_matrix
+            cleanup.haversine_matrix = system.haversine_matrix if hasattr(system, 'haversine_matrix') else None
             cleanup.dog_assignments = system.dog_assignments
             cleanup.driver_capacities = system.driver_capacities
             cleanup.sheets_client = system.sheets_client
+            
+            # Set conversion factor
+            if hasattr(cleanup, 'MILES_TO_MINUTES_FACTOR'):
+                cleanup.MILES_TO_MINUTES_FACTOR = MILES_TO_MINUTES_FACTOR
             
             moves = cleanup.fix_capacity_violations()
             
