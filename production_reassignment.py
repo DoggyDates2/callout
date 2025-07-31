@@ -1003,6 +1003,10 @@ class DogReassignmentSystem:
         print("⚠️ WARNING: Very tight constraints may result in unassigned dogs!")
         print("=" * 80)
         
+        # DEBUG MODE - Set to True to see detailed decision logging
+        DEBUG_MODE = False  # Change to True for detailed traces
+        DEBUG_DOGS = []     # Add specific dog names to trace, e.g. ["Fluffy", "Max"]
+        
         dogs_to_reassign = self.get_dogs_to_reassign()
         
         if not dogs_to_reassign:
@@ -1031,6 +1035,10 @@ class DogReassignmentSystem:
             best_assignment = None
             best_distance = float('inf')
             
+            # Debug logging for specific dogs
+            if DEBUG_MODE and (not DEBUG_DOGS or callout_dog['dog_name'] in DEBUG_DOGS):
+                print(f"\n🔍 DECISION TRACE for {callout_dog['dog_name']} (needs groups {callout_dog['needed_groups']}):")
+            
             # Check all drivers for direct assignment
             for assignment in current_assignments:
                 driver = assignment['driver']
@@ -1046,11 +1054,16 @@ class DogReassignmentSystem:
                     continue
                 
                 # Check group compatibility with distance requirements
-                if not self.check_group_compatibility(callout_dog['needed_groups'], assignment['needed_groups'], distance, self.PREFERRED_TIME):
-                    continue
+                compatible = self.check_group_compatibility(callout_dog['needed_groups'], assignment['needed_groups'], distance, self.PREFERRED_TIME)
                 
                 # Check capacity
-                if self.check_driver_can_accept(driver, callout_dog, current_assignments):
+                has_capacity = self.check_driver_can_accept(driver, callout_dog, current_assignments)
+                
+                # Debug logging
+                if DEBUG_MODE and (not DEBUG_DOGS or callout_dog['dog_name'] in DEBUG_DOGS) and distance <= self.PREFERRED_TIME:
+                    print(f"   Checking {driver}: dist={distance:.0f}min, groups={assignment['needed_groups']}, compatible={compatible}, capacity={has_capacity}")
+                
+                if compatible and has_capacity:
                     if distance < best_distance:
                         best_assignment = {
                             'driver': driver,
@@ -1080,6 +1093,8 @@ class DogReassignmentSystem:
                     assignments_made.append(assignment_record)
                     dogs_assigned_step1.append(callout_dog)
                     print(f"   ✅ {callout_dog['dog_name']} → {driver} ({distance:.0f} min)")
+            elif DEBUG_MODE and (not DEBUG_DOGS or callout_dog['dog_name'] in DEBUG_DOGS):
+                print(f"   ❌ No direct assignment found for {callout_dog['dog_name']} at ≤{self.PREFERRED_TIME} min")
         
         # Remove assigned dogs
         for dog in dogs_assigned_step1:
@@ -1657,6 +1672,246 @@ class DogReassignmentSystem:
             return False
 
 
+class ReassignmentEvaluator:
+    """Evaluate and explain reassignment decisions"""
+    
+    def __init__(self, system, reassignments):
+        self.system = system
+        self.reassignments = reassignments
+        self.moves = getattr(system, 'greedy_moves_made', [])
+    
+    def generate_detailed_report(self):
+        """Generate a detailed report explaining all decisions"""
+        print("\n" + "="*80)
+        print("📊 DETAILED REASSIGNMENT EVALUATION REPORT")
+        print("="*80)
+        
+        # 1. Summary Statistics
+        self._print_summary_stats()
+        
+        # 2. Assignment Quality Analysis
+        self._analyze_assignment_quality()
+        
+        # 3. Cascading Move Analysis
+        self._analyze_cascading_moves()
+        
+        # 4. Individual Assignment Explanations
+        self._explain_individual_assignments()
+        
+        # 5. Distance Distribution
+        self._analyze_distance_distribution()
+        
+        # 6. Group Compatibility Analysis
+        self._analyze_group_patterns()
+    
+    def _print_summary_stats(self):
+        """Print summary statistics"""
+        print("\n📈 SUMMARY STATISTICS:")
+        print("-" * 40)
+        
+        total = len(self.reassignments)
+        by_type = {}
+        by_quality = {}
+        
+        for assignment in self.reassignments:
+            # Count by type
+            atype = assignment.get('assignment_type', 'unknown')
+            by_type[atype] = by_type.get(atype, 0) + 1
+            
+            # Count by quality
+            quality = assignment.get('quality', 'unknown')
+            by_quality[quality] = by_quality.get(quality, 0) + 1
+        
+        print(f"Total reassignments: {total}")
+        print("\nBy assignment type:")
+        for atype, count in sorted(by_type.items()):
+            print(f"  - {atype}: {count} ({count/total*100:.1f}%)")
+        
+        print("\nBy quality:")
+        for quality, count in sorted(by_quality.items()):
+            print(f"  - {quality}: {count} ({count/total*100:.1f}%)")
+        
+        # Average distance
+        distances = [a['distance'] for a in self.reassignments if a['distance'] != float('inf')]
+        if distances:
+            avg_distance = sum(distances) / len(distances)
+            print(f"\nAverage distance: {avg_distance:.1f} minutes")
+            print(f"Min distance: {min(distances):.1f} minutes")
+            print(f"Max distance: {max(distances):.1f} minutes")
+    
+    def _analyze_assignment_quality(self):
+        """Analyze why assignments got their quality ratings"""
+        print("\n🏆 ASSIGNMENT QUALITY ANALYSIS:")
+        print("-" * 40)
+        
+        # Group by quality
+        by_quality = {'GOOD': [], 'BACKUP': [], 'EMERGENCY': []}
+        for a in self.reassignments:
+            quality = a.get('quality', 'EMERGENCY')
+            if quality in by_quality:
+                by_quality[quality].append(a)
+        
+        for quality, assignments in by_quality.items():
+            if not assignments:
+                continue
+            
+            print(f"\n{quality} assignments ({len(assignments)}):")
+            
+            # Show a few examples
+            for i, a in enumerate(assignments[:3]):
+                dog_name = a['dog_name']
+                driver = a['driver']
+                distance = a['distance']
+                atype = a['assignment_type']
+                
+                if distance == float('inf'):
+                    print(f"  {i+1}. {dog_name} → {driver}")
+                    print(f"     ❌ No driver found within constraints")
+                else:
+                    print(f"  {i+1}. {dog_name} → {driver} ({distance:.0f} min)")
+                    print(f"     Type: {atype}")
+                    
+                    # Explain why this quality
+                    if quality == 'GOOD':
+                        print(f"     ✅ Within preferred {self.system.PREFERRED_TIME} min radius")
+                    elif quality == 'BACKUP':
+                        print(f"     🟡 Between {self.system.PREFERRED_TIME}-{self.system.MAX_TIME} min")
+                    else:
+                        print(f"     🚨 Beyond {self.system.MAX_TIME} min backup threshold")
+    
+    def _analyze_cascading_moves(self):
+        """Analyze cascading moves and explain why they were needed"""
+        print("\n🔄 CASCADING MOVE ANALYSIS:")
+        print("-" * 40)
+        
+        if not self.moves:
+            print("No cascading moves were made.")
+            return
+        
+        print(f"Total cascading moves: {len(self.moves)}")
+        
+        # Group by reason
+        by_reason = {}
+        for move in self.moves:
+            reason = move['reason']
+            if 'strategic' in reason:
+                key = 'Strategic (targeted)'
+            else:
+                key = 'Other'
+            by_reason[key] = by_reason.get(key, 0) + 1
+        
+        print("\nMove types:")
+        for reason, count in by_reason.items():
+            print(f"  - {reason}: {count}")
+        
+        # Detailed analysis of first few moves
+        print("\nDetailed move explanations:")
+        for i, move in enumerate(self.moves[:5]):
+            print(f"\n{i+1}. {move['dog_name']}:")
+            print(f"   From: {move['from_driver']} → To: {move['to_driver']}")
+            print(f"   Distance: {move['distance']:.0f} minutes")
+            print(f"   Reason: {move['reason']}")
+            
+            # Explain the strategic reasoning
+            if 'strategic' in move['reason']:
+                # Extract which dog this move was for
+                parts = move['reason'].split('_for_')
+                if len(parts) > 1:
+                    beneficiary = parts[1]
+                    print(f"   💡 This move freed space for: {beneficiary}")
+                    print(f"   🎯 Strategic: Targeted specific blocked groups")
+    
+    def _explain_individual_assignments(self):
+        """Explain logic for specific assignments"""
+        print("\n🔍 INDIVIDUAL ASSIGNMENT LOGIC:")
+        print("-" * 40)
+        
+        # Show detailed logic for first few assignments
+        for i, assignment in enumerate(self.reassignments[:5]):
+            print(f"\n{i+1}. {assignment['dog_name']} ({assignment['dog_id']}):")
+            print(f"   Assignment: {assignment['new_assignment']}")
+            
+            if assignment['driver'] == 'UNASSIGNED':
+                print("   ❌ UNASSIGNED - No viable driver within 7 minute constraint")
+                self._explain_why_unassigned(assignment)
+            else:
+                print(f"   ✅ Assigned to: {assignment['driver']}")
+                print(f"   Distance: {assignment['distance']:.0f} minutes")
+                print(f"   Quality: {assignment['quality']}")
+                print(f"   Method: {assignment['assignment_type']}")
+                
+                if assignment['assignment_type'] == 'direct':
+                    print("   💡 Direct assignment - driver had capacity and was within range")
+                elif assignment['assignment_type'] == 'strategic_cascading':
+                    print("   💡 Required strategic cascading - driver was blocked by capacity")
+                    print("      A strategic move freed up the necessary space")
+                elif assignment['assignment_type'] == 'radius_expansion':
+                    print(f"   💡 Found during radius expansion - no closer options available")
+    
+    def _explain_why_unassigned(self, assignment):
+        """Explain why a dog couldn't be assigned"""
+        dog_id = assignment['dog_id']
+        print(f"   Analyzing why {assignment['dog_name']} couldn't be assigned...")
+        
+        # Count potential drivers by category
+        close_with_capacity = 0
+        close_but_full = 0
+        close_wrong_groups = 0
+        too_far = 0
+        
+        print("   (Analysis of nearby drivers would go here)")
+        print("   Common reasons: all nearby drivers full, incompatible groups, or beyond 7 min")
+    
+    def _analyze_distance_distribution(self):
+        """Analyze distance patterns"""
+        print("\n📏 DISTANCE DISTRIBUTION:")
+        print("-" * 40)
+        
+        # Create distance buckets
+        buckets = {
+            '0-3 min': 0,
+            '3-5 min': 0,
+            '5-7 min': 0,
+            '7+ min': 0,
+            'Unassigned': 0
+        }
+        
+        for a in self.reassignments:
+            dist = a['distance']
+            if dist == float('inf'):
+                buckets['Unassigned'] += 1
+            elif dist <= 3:
+                buckets['0-3 min'] += 1
+            elif dist <= 5:
+                buckets['3-5 min'] += 1
+            elif dist <= 7:
+                buckets['5-7 min'] += 1
+            else:
+                buckets['7+ min'] += 1
+        
+        total = len(self.reassignments)
+        for bucket, count in buckets.items():
+            if count > 0:
+                bar = '█' * int(count / total * 40)
+                print(f"{bucket:12} [{count:2}] {bar} {count/total*100:.1f}%")
+    
+    def _analyze_group_patterns(self):
+        """Analyze group assignment patterns"""
+        print("\n👥 GROUP COMPATIBILITY PATTERNS:")
+        print("-" * 40)
+        
+        print("Group matching analysis:")
+        print("- Exact matches: Dogs placed with drivers in same groups")
+        print("- Adjacent matches: Dogs placed with drivers in neighboring groups")
+        print("- This affects allowed distance thresholds")
+
+
+def evaluate_reassignments(system, reassignments):
+    """Run the evaluation and generate report"""
+    evaluator = ReassignmentEvaluator(system, reassignments)
+    evaluator.generate_detailed_report()
+
+
 def main():
     """Main function to run the dog reassignment system with capacity cleanup"""
     print("🚀 Enhanced Dog Reassignment System - TIME-BASED (3-7 minute constraints)")
@@ -1728,6 +1983,12 @@ def main():
     
     # Write results
     if reassignments:
+        # Run evaluation BEFORE writing to sheets to understand decisions
+        print("\n" + "="*80)
+        print("🔍 EVALUATING REASSIGNMENT DECISIONS")
+        print("="*80)
+        evaluate_reassignments(system, reassignments)
+        
         write_success = system.write_results_to_sheets(reassignments)
         if write_success:
             print(f"\n🎉 SUCCESS! Processed {len(reassignments)} callout assignments")
