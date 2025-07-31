@@ -1073,7 +1073,8 @@ class DogReassignmentSystem:
                         'driver': driver,
                         'distance': distance,
                         'quality': 'GOOD',
-                        'assignment_type': 'direct'
+                        'assignment_type': 'direct',
+                        'original_callout': callout_dog['original_callout']
                     }
                     
                     assignments_made.append(assignment_record)
@@ -1173,7 +1174,8 @@ class DogReassignmentSystem:
                                 'driver': driver,
                                 'distance': distance,
                                 'quality': 'GOOD',
-                                'assignment_type': 'strategic_cascading'
+                                'assignment_type': 'strategic_cascading',
+                                'original_callout': callout_dog['original_callout']
                             }
                             
                             assignments_made.append(assignment_record)
@@ -1258,7 +1260,8 @@ class DogReassignmentSystem:
                             'driver': driver,
                             'distance': distance,
                             'quality': quality,
-                            'assignment_type': 'radius_expansion'
+                            'assignment_type': 'radius_expansion',
+                            'original_callout': callout_dog['original_callout']
                         }
                         
                         assignments_made.append(assignment_record)
@@ -1340,7 +1343,8 @@ class DogReassignmentSystem:
                                     'driver': driver,
                                     'distance': distance,
                                     'quality': quality,
-                                    'assignment_type': 'strategic_cascading_radius'
+                                    'assignment_type': 'strategic_cascading_radius',
+                                    'original_callout': callout_dog['original_callout']
                                 }
                                 
                                 assignments_made.append(assignment_record)
@@ -1370,7 +1374,8 @@ class DogReassignmentSystem:
                     'driver': 'UNASSIGNED',
                     'distance': float('inf'),
                     'quality': 'EMERGENCY',
-                    'assignment_type': 'failed'
+                    'assignment_type': 'failed',
+                    'original_callout': callout_dog['original_callout']
                 }
                 assignments_made.append(assignment_record)
                 print(f"   ❌ {callout_dog['dog_name']} - No viable assignment found within 7 minutes")
@@ -1433,223 +1438,223 @@ class DogReassignmentSystem:
             print("🔄 Falling back to basic assignment...")
             return []
 
-def write_results_to_sheets(self, reassignments):
-    """Write reassignment results and greedy walk moves back to Google Sheets"""
-    try:
-        print(f"\n📝 Writing {len(reassignments)} results to Google Sheets...")
-        
-        if not hasattr(self, 'sheets_client') or not self.sheets_client:
-            print("❌ Google Sheets client not initialized")
-            return False
-        
-        # Pre-validation of reassignments data
-        print(f"🔒 PRE-VALIDATION: Checking reassignment data structure...")
-        for i, assignment in enumerate(reassignments[:3]):  # Show first 3
-            dog_id = assignment.get('dog_id', 'MISSING')
-            new_assignment = assignment.get('new_assignment', 'MISSING')
-            print(f"   {i+1}. Dog ID: '{dog_id}' → New Assignment: '{new_assignment}'")
-            
-            # Critical safety checks
-            if dog_id == new_assignment:
-                print(f"   🚨 CRITICAL ERROR: dog_id equals new_assignment! ABORTING!")
-                return False
-            
-            if new_assignment.endswith('x') and new_assignment[:-1].isdigit():
-                print(f"   🚨 CRITICAL ERROR: new_assignment looks like dog_id! ABORTING!")
-                return False
-            
-            if ':' not in new_assignment:
-                print(f"   🚨 CRITICAL ERROR: new_assignment missing driver:group format! ABORTING!")
-                return False
-        
-        print(f"✅ Pre-validation passed!")
-        
-        # Extract sheet ID
-        sheet_id = "1mg8d5CLxSR54KhNUL8SpL5jzrGN-bghTsC9vxSK8lR0"
-        
-        # Open the spreadsheet
-        spreadsheet = self.sheets_client.open_by_key(sheet_id)
-        
-        # Get the worksheet
-        worksheet = None
+    def write_results_to_sheets(self, reassignments):
+        """Write reassignment results and greedy walk moves back to Google Sheets"""
         try:
-            for ws in spreadsheet.worksheets():
-                if str(ws.id) == "267803750":
-                    worksheet = ws
-                    break
-        except:
-            pass
-        
-        if not worksheet:
-            for sheet_name in ["Map", "Sheet1", "Dogs", "Assignments"]:
-                try:
-                    worksheet = spreadsheet.worksheet(sheet_name)
-                    print(f"📋 Using sheet: {sheet_name}")
-                    break
-                except:
-                    continue
-        
-        if not worksheet:
-            print("❌ Could not find the target worksheet")
-            return False
-        
-        # Get all data
-        all_data = worksheet.get_all_values()
-        if not all_data:
-            print("❌ No data found in worksheet")
-            return False
-        
-        header_row = all_data[0]
-        print(f"📋 Sheet has {len(all_data)} rows")
-        
-        # Find the Dog ID column
-        dog_id_col = None
-        for i, header in enumerate(header_row):
-            header_clean = str(header).lower().strip()
-            if 'dog id' in header_clean:
-                dog_id_col = i
-                print(f"📍 Found Dog ID column at index {i}")
-                break
-        
-        if dog_id_col is None:
-            print("❌ Could not find 'Dog ID' column")
-            return False
-        
-        # Target Column H (Combined column) - index 7
-        combined_col = 7  
-        # Target Column K (Callout column) - index 10
-        callout_col = 10
-        print(f"📍 Writing to Column H (Combined) at index {combined_col}")
-        print(f"📍 Updating Column K (Callout) at index {callout_col}")
-        
-        # Prepare batch updates for reassignments
-        updates = []
-        updates_count = 0
-        
-        print(f"\n🔍 Processing {len(reassignments)} reassignments...")
-        
-        # Process reassignments
-        for assignment in reassignments:
-            dog_id = str(assignment.get('dog_id', '')).strip()
-            new_assignment = str(assignment.get('new_assignment', '')).strip()
-            original_callout = assignment.get('original_callout', '')  # This contains the original assignment
+            print(f"\n📝 Writing {len(reassignments)} results to Google Sheets...")
             
-            # Final validation
-            if not new_assignment or new_assignment == dog_id or ':' not in new_assignment:
-                print(f"  ❌ SKIPPING invalid assignment for {dog_id}")
-                continue
+            if not hasattr(self, 'sheets_client') or not self.sheets_client:
+                print("❌ Google Sheets client not initialized")
+                return False
             
-            # Find the row for this dog ID
-            for row_idx in range(1, len(all_data)):
-                if dog_id_col < len(all_data[row_idx]):
-                    current_dog_id = str(all_data[row_idx][dog_id_col]).strip()
-                    
-                    if current_dog_id == dog_id:
-                        # Update Column H with new assignment
-                        cell_h_address = gspread.utils.rowcol_to_a1(row_idx + 1, combined_col + 1)
-                        updates.append({
-                            'range': cell_h_address,
-                            'values': [[new_assignment]]
-                        })
-                        
-                        # Update Column K to show reassignment history
-                        # Format: "Reassigned from: [original assignment]"
-                        if original_callout:
-                            reassignment_note = f"Reassigned from: {original_callout}"
-                        else:
-                            # If we don't have the original callout, just mark as reassigned
-                            reassignment_note = f"Reassigned to: {new_assignment}"
-                        
-                        cell_k_address = gspread.utils.rowcol_to_a1(row_idx + 1, callout_col + 1)
-                        updates.append({
-                            'range': cell_k_address,
-                            'values': [[reassignment_note]]
-                        })
-                        
-                        updates_count += 1
-                        print(f"  ✅ {dog_id} → {new_assignment}")
-                        print(f"     📝 Callout updated: {reassignment_note}")
-                        break
-        
-        # Process strategic cascading moves if any
-        if hasattr(self, 'greedy_moves_made') and self.greedy_moves_made:
-            print(f"\n🔍 Processing {len(self.greedy_moves_made)} strategic cascading moves...")
-            
-            for move in self.greedy_moves_made:
-                dog_id = str(move.get('dog_id', '')).strip()
-                from_driver = move.get('from_driver', '')
-                to_driver = move.get('to_driver', '')
+            # Pre-validation of reassignments data
+            print(f"🔒 PRE-VALIDATION: Checking reassignment data structure...")
+            for i, assignment in enumerate(reassignments[:3]):  # Show first 3
+                dog_id = assignment.get('dog_id', 'MISSING')
+                new_assignment = assignment.get('new_assignment', 'MISSING')
+                print(f"   {i+1}. Dog ID: '{dog_id}' → New Assignment: '{new_assignment}'")
                 
-                # Find current assignment for this dog and update driver
+                # Critical safety checks
+                if dog_id == new_assignment:
+                    print(f"   🚨 CRITICAL ERROR: dog_id equals new_assignment! ABORTING!")
+                    return False
+                
+                if new_assignment.endswith('x') and new_assignment[:-1].isdigit():
+                    print(f"   🚨 CRITICAL ERROR: new_assignment looks like dog_id! ABORTING!")
+                    return False
+                
+                if ':' not in new_assignment:
+                    print(f"   🚨 CRITICAL ERROR: new_assignment missing driver:group format! ABORTING!")
+                    return False
+            
+            print(f"✅ Pre-validation passed!")
+            
+            # Extract sheet ID
+            sheet_id = "1mg8d5CLxSR54KhNUL8SpL5jzrGN-bghTsC9vxSK8lR0"
+            
+            # Open the spreadsheet
+            spreadsheet = self.sheets_client.open_by_key(sheet_id)
+            
+            # Get the worksheet
+            worksheet = None
+            try:
+                for ws in spreadsheet.worksheets():
+                    if str(ws.id) == "267803750":
+                        worksheet = ws
+                        break
+            except:
+                pass
+            
+            if not worksheet:
+                for sheet_name in ["Map", "Sheet1", "Dogs", "Assignments"]:
+                    try:
+                        worksheet = spreadsheet.worksheet(sheet_name)
+                        print(f"📋 Using sheet: {sheet_name}")
+                        break
+                    except:
+                        continue
+            
+            if not worksheet:
+                print("❌ Could not find the target worksheet")
+                return False
+            
+            # Get all data
+            all_data = worksheet.get_all_values()
+            if not all_data:
+                print("❌ No data found in worksheet")
+                return False
+            
+            header_row = all_data[0]
+            print(f"📋 Sheet has {len(all_data)} rows")
+            
+            # Find the Dog ID column
+            dog_id_col = None
+            for i, header in enumerate(header_row):
+                header_clean = str(header).lower().strip()
+                if 'dog id' in header_clean:
+                    dog_id_col = i
+                    print(f"📍 Found Dog ID column at index {i}")
+                    break
+            
+            if dog_id_col is None:
+                print("❌ Could not find 'Dog ID' column")
+                return False
+            
+            # Target Column H (Combined column) - index 7
+            combined_col = 7  
+            # Target Column K (Callout column) - index 10
+            callout_col = 10
+            print(f"📍 Writing to Column H (Combined) at index {combined_col}")
+            print(f"📍 Updating Column K (Callout) at index {callout_col}")
+            
+            # Prepare batch updates for reassignments
+            updates = []
+            updates_count = 0
+            
+            print(f"\n🔍 Processing {len(reassignments)} reassignments...")
+            
+            # Process reassignments
+            for assignment in reassignments:
+                dog_id = str(assignment.get('dog_id', '')).strip()
+                new_assignment = str(assignment.get('new_assignment', '')).strip()
+                original_callout = assignment.get('original_callout', '')  # This contains the original assignment
+                
+                # Final validation
+                if not new_assignment or new_assignment == dog_id or ':' not in new_assignment:
+                    print(f"  ❌ SKIPPING invalid assignment for {dog_id}")
+                    continue
+                
+                # Find the row for this dog ID
                 for row_idx in range(1, len(all_data)):
                     if dog_id_col < len(all_data[row_idx]):
                         current_dog_id = str(all_data[row_idx][dog_id_col]).strip()
                         
                         if current_dog_id == dog_id:
-                            # Get current assignment and update driver
-                            current_combined = str(all_data[row_idx][combined_col]).strip()
-                            if ':' in current_combined:
-                                assignment_part = current_combined.split(':', 1)[1]
-                                new_combined = f"{to_driver}:{assignment_part}"
-                                old_combined = f"{from_driver}:{assignment_part}"
-                                
-                                # Update Column H
-                                cell_h_address = gspread.utils.rowcol_to_a1(row_idx + 1, combined_col + 1)
-                                updates.append({
-                                    'range': cell_h_address,
-                                    'values': [[new_combined]]
-                                })
-                                
-                                # Update Column K to show cascading move
-                                cascading_note = f"Cascading move: {from_driver} → {to_driver}"
-                                cell_k_address = gspread.utils.rowcol_to_a1(row_idx + 1, callout_col + 1)
-                                updates.append({
-                                    'range': cell_k_address,
-                                    'values': [[cascading_note]]
-                                })
-                                
-                                print(f"  🎯 {dog_id} strategic move: {from_driver} → {to_driver}")
-                                print(f"     📝 Callout updated: {cascading_note}")
-                                updates_count += 1
+                            # Update Column H with new assignment
+                            cell_h_address = gspread.utils.rowcol_to_a1(row_idx + 1, combined_col + 1)
+                            updates.append({
+                                'range': cell_h_address,
+                                'values': [[new_assignment]]
+                            })
+                            
+                            # Update Column K to show reassignment history
+                            # Format: "Reassigned from: [original assignment]"
+                            if original_callout:
+                                reassignment_note = f"Reassigned from: {original_callout}"
+                            else:
+                                # If we don't have the original callout, just mark as reassigned
+                                reassignment_note = f"Reassigned to: {new_assignment}"
+                            
+                            cell_k_address = gspread.utils.rowcol_to_a1(row_idx + 1, callout_col + 1)
+                            updates.append({
+                                'range': cell_k_address,
+                                'values': [[reassignment_note]]
+                            })
+                            
+                            updates_count += 1
+                            print(f"  ✅ {dog_id} → {new_assignment}")
+                            print(f"     📝 Callout updated: {reassignment_note}")
                             break
-        
-        if not updates:
-            print("❌ No valid updates to make")
+            
+            # Process strategic cascading moves if any
+            if hasattr(self, 'greedy_moves_made') and self.greedy_moves_made:
+                print(f"\n🔍 Processing {len(self.greedy_moves_made)} strategic cascading moves...")
+                
+                for move in self.greedy_moves_made:
+                    dog_id = str(move.get('dog_id', '')).strip()
+                    from_driver = move.get('from_driver', '')
+                    to_driver = move.get('to_driver', '')
+                    
+                    # Find current assignment for this dog and update driver
+                    for row_idx in range(1, len(all_data)):
+                        if dog_id_col < len(all_data[row_idx]):
+                            current_dog_id = str(all_data[row_idx][dog_id_col]).strip()
+                            
+                            if current_dog_id == dog_id:
+                                # Get current assignment and update driver
+                                current_combined = str(all_data[row_idx][combined_col]).strip()
+                                if ':' in current_combined:
+                                    assignment_part = current_combined.split(':', 1)[1]
+                                    new_combined = f"{to_driver}:{assignment_part}"
+                                    old_combined = f"{from_driver}:{assignment_part}"
+                                    
+                                    # Update Column H
+                                    cell_h_address = gspread.utils.rowcol_to_a1(row_idx + 1, combined_col + 1)
+                                    updates.append({
+                                        'range': cell_h_address,
+                                        'values': [[new_combined]]
+                                    })
+                                    
+                                    # Update Column K to show cascading move
+                                    cascading_note = f"Cascading move: {from_driver} → {to_driver}"
+                                    cell_k_address = gspread.utils.rowcol_to_a1(row_idx + 1, callout_col + 1)
+                                    updates.append({
+                                        'range': cell_k_address,
+                                        'values': [[cascading_note]]
+                                    })
+                                    
+                                    print(f"  🎯 {dog_id} strategic move: {from_driver} → {to_driver}")
+                                    print(f"     📝 Callout updated: {cascading_note}")
+                                    updates_count += 1
+                                break
+            
+            if not updates:
+                print("❌ No valid updates to make")
+                return False
+            
+            # Execute batch update
+            print(f"\n📤 Writing {len(updates)} updates to Google Sheets...")
+            worksheet.batch_update(updates)
+            
+            success_msg = f"✅ Successfully updated {updates_count} assignments with strategic cascading!"
+            if hasattr(self, 'greedy_moves_made') and self.greedy_moves_made:
+                strategic_moves = len([m for m in self.greedy_moves_made if 'strategic' in m['reason']])
+                success_msg += f" (including {strategic_moves} strategic cascading moves)"
+            
+            print(success_msg)
+            print(f"🎯 Used locality-first + strategic cascading with 7 min time limit")
+            print(f"✅ WITH CAPACITY FIXES: Duplicate tracking + safe assignments")
+            print(f"📝 Column K (Callout) updated with reassignment history")
+            
+            # Send Slack notification
+            slack_webhook = os.environ.get('SLACK_WEBHOOK_URL')
+            if slack_webhook:
+                try:
+                    message = f"🐕 Dog Reassignment Complete: {updates_count} assignments updated using strategic cascading + 7 min limit + capacity fixes"
+                    slack_message = {"text": message}
+                    response = requests.post(slack_webhook, json=slack_message, timeout=10)
+                    if response.status_code == 200:
+                        print("📱 Slack notification sent")
+                except Exception as e:
+                    print(f"⚠️ Could not send Slack notification: {e}")
+            
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error writing to sheets: {e}")
+            import traceback
+            print(f"🔍 Full error: {traceback.format_exc()}")
             return False
-        
-        # Execute batch update
-        print(f"\n📤 Writing {len(updates)} updates to Google Sheets...")
-        worksheet.batch_update(updates)
-        
-        success_msg = f"✅ Successfully updated {updates_count} assignments with strategic cascading!"
-        if hasattr(self, 'greedy_moves_made') and self.greedy_moves_made:
-            strategic_moves = len([m for m in self.greedy_moves_made if 'strategic' in m['reason']])
-            success_msg += f" (including {strategic_moves} strategic cascading moves)"
-        
-        print(success_msg)
-        print(f"🎯 Used locality-first + strategic cascading with 7 min time limit")
-        print(f"✅ WITH CAPACITY FIXES: Duplicate tracking + safe assignments")
-        print(f"📝 Column K (Callout) updated with reassignment history")
-        
-        # Send Slack notification
-        slack_webhook = os.environ.get('SLACK_WEBHOOK_URL')
-        if slack_webhook:
-            try:
-                message = f"🐕 Dog Reassignment Complete: {updates_count} assignments updated using strategic cascading + 7 min limit + capacity fixes"
-                slack_message = {"text": message}
-                response = requests.post(slack_webhook, json=slack_message, timeout=10)
-                if response.status_code == 200:
-                    print("📱 Slack notification sent")
-            except Exception as e:
-                print(f"⚠️ Could not send Slack notification: {e}")
-        
-        return True
-        
-    except Exception as e:
-        print(f"❌ Error writing to sheets: {e}")
-        import traceback
-        print(f"🔍 Full error: {traceback.format_exc()}")
-        return False
 
 
 def main():
