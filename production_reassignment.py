@@ -598,6 +598,16 @@ class DogReassignmentSystem:
                             if group_key in load:
                                 load[group_key] += assignment['num_dogs']
         
+        # DEBUG: For problematic drivers, double-check
+        if driver_name in ["Chase", "Hannah", "Blanch"] and current_assignments:
+            # Count dogs manually
+            manual_count = 0
+            for assignment in current_assignments:
+                if assignment.get('driver') == driver_name:
+                    manual_count += 1
+            if manual_count != len(counted_dogs):
+                print(f"      🚨 COUNT MISMATCH for {driver_name}: manual={manual_count}, counted={len(counted_dogs)}")
+        
         return load
 
     def build_initial_assignments_state(self):
@@ -638,6 +648,18 @@ class DogReassignmentSystem:
 
     def make_assignment_safely(self, callout_dog, driver, current_assignments, assignment_type='direct'):
         """Safely make an assignment ensuring no duplicates and capacity is respected"""
+        # DEBUG MODE - Enable detailed debugging
+        DEBUG_ASSIGNMENTS = True  # Set to False to reduce output
+        
+        if DEBUG_ASSIGNMENTS:
+            print(f"\n🔍 DEBUG: Making assignment {callout_dog['dog_name']} → {driver}")
+            print(f"   Before: {len(current_assignments)} assignments")
+            existing = [a for a in current_assignments if a.get('dog_id') == callout_dog['dog_id']]
+            if existing:
+                print(f"   ⚠️ Dog already in assignments: {len(existing)} times")
+                for e in existing:
+                    print(f"      - With driver: {e.get('driver')}")
+        
         # First, remove any existing entries for this dog
         before_count = len(current_assignments)
         current_assignments[:] = [a for a in current_assignments 
@@ -656,9 +678,19 @@ class DogReassignmentSystem:
             'num_dogs': callout_dog['num_dogs']
         })
         
+        if DEBUG_ASSIGNMENTS:
+            print(f"   After: {len(current_assignments)} assignments")
+        
         # Verify capacity is still valid
         load = self.calculate_driver_load(driver, current_assignments)
         capacity = self.driver_capacities.get(driver, {})
+        
+        # DEBUG: Double-check capacity calculation
+        if DEBUG_ASSIGNMENTS and driver in ["Chase", "Hannah", "Blanch"]:
+            print(f"\n   🔍 SPECIAL DEBUG for {driver}:")
+            load_debug = self.debug_capacity_calculation(driver, current_assignments, "(after assignment)")
+            if load != load_debug:
+                print(f"   🚨 CAPACITY MISMATCH! Regular: {load}, Debug: {load_debug}")
         
         capacity_ok = True
         for group in callout_dog['needed_groups']:
@@ -737,6 +769,189 @@ class DogReassignmentSystem:
             print(f"   ✅ All capacity constraints satisfied")
         
         return violations
+
+    def debug_capacity_calculation(self, driver_name, current_assignments, context=""):
+        """Debug version of calculate_driver_load with detailed logging"""
+        print(f"\n🔍 DEBUG CAPACITY CALCULATION for {driver_name} {context}")
+        print(f"   Using assignments list with {len(current_assignments)} entries")
+        
+        load = {'group1': 0, 'group2': 0, 'group3': 0}
+        counted_dogs = set()
+        dogs_by_group = {'group1': [], 'group2': [], 'group3': []}
+        
+        for assignment in current_assignments:
+            if assignment.get('driver') == driver_name:
+                dog_id = assignment.get('dog_id')
+                dog_name = assignment.get('dog_name', 'Unknown')
+                
+                if dog_id in counted_dogs:
+                    print(f"   ⚠️ DUPLICATE: {dog_name} ({dog_id}) already counted!")
+                    continue
+                    
+                counted_dogs.add(dog_id)
+                assigned_groups = assignment.get('needed_groups', [])
+                num_dogs = assignment.get('num_dogs', 1)
+                
+                print(f"   📦 {dog_name} ({dog_id}): {num_dogs} dogs in groups {assigned_groups}")
+                
+                for group in assigned_groups:
+                    group_key = f'group{group}'
+                    if group_key in load:
+                        load[group_key] += num_dogs
+                        dogs_by_group[group_key].append(f"{dog_name}({num_dogs})")
+        
+        # Show final tallies
+        capacity = self.driver_capacities.get(driver_name, {})
+        print(f"\n   📊 FINAL LOAD for {driver_name}:")
+        for group_num in [1, 2, 3]:
+            group_key = f'group{group_num}'
+            current = load.get(group_key, 0)
+            max_cap = capacity.get(group_key, 0)
+            dogs_list = dogs_by_group.get(group_key, [])
+            
+            status = "✅" if current <= max_cap else "🚨"
+            print(f"   {status} Group {group_num}: {current}/{max_cap} - Dogs: {', '.join(dogs_list) if dogs_list else 'None'}")
+        
+        return load
+
+    def debug_unassigned_dog(self, dog_info):
+        """Detailed analysis of why a dog couldn't be assigned"""
+        print(f"\n🔍 DEEP DEBUG: Why {dog_info['dog_name']} ({dog_info['dog_id']}) couldn't be assigned")
+        print(f"   Needs groups: {dog_info['needed_groups']}")
+        print(f"   Number of dogs: {dog_info['num_dogs']}")
+        
+        # Categorize all drivers
+        results = {
+            'too_far': [],
+            'wrong_groups': [],
+            'no_capacity': [],
+            'called_out': [],
+            'compatible_but_full': []
+        }
+        
+        print(f"\n   Checking all {len(self.driver_capacities)} drivers...")
+        
+        for driver_name, capacity in self.driver_capacities.items():
+            # Skip called-out drivers
+            if driver_name in self.called_out_drivers:
+                results['called_out'].append(driver_name)
+                continue
+            
+            # Find closest dog assigned to this driver
+            min_distance = float('inf')
+            closest_dog = None
+            driver_groups = []
+            
+            for assignment in self.dog_assignments:
+                if assignment.get('combined', '').startswith(f"{driver_name}:"):
+                    dog_id = assignment['dog_id']
+                    distance = self.get_distance(dog_info['dog_id'], dog_id)
+                    if distance < min_distance:
+                        min_distance = distance
+                        closest_dog = assignment
+                        # Extract driver's groups
+                        groups_str = assignment['combined'].split(':', 1)[1]
+                        driver_groups = self._extract_groups_for_capacity_check(groups_str)
+            
+            if min_distance == float('inf'):
+                continue
+            
+            # Check distance
+            if min_distance > self.ABSOLUTE_MAX_TIME:
+                results['too_far'].append({
+                    'driver': driver_name,
+                    'distance': min_distance,
+                    'via': closest_dog['dog_name'] if closest_dog else 'Unknown'
+                })
+                continue
+            
+            # Check group compatibility
+            compatible = self.check_group_compatibility(
+                dog_info['needed_groups'], 
+                driver_groups, 
+                min_distance,
+                self.ABSOLUTE_MAX_TIME
+            )
+            
+            if not compatible:
+                results['wrong_groups'].append({
+                    'driver': driver_name,
+                    'distance': min_distance,
+                    'driver_groups': driver_groups,
+                    'needed_groups': dog_info['needed_groups']
+                })
+                continue
+            
+            # Check capacity
+            current_load = self.calculate_driver_load(driver_name)
+            has_space = True
+            capacity_details = []
+            
+            for group in dog_info['needed_groups']:
+                group_key = f'group{group}'
+                current = current_load.get(group_key, 0)
+                max_cap = capacity.get(group_key, 0)
+                needed = dog_info['num_dogs']
+                
+                if current + needed > max_cap:
+                    has_space = False
+                    capacity_details.append(f"Group{group}: {current}+{needed}>{max_cap}")
+            
+            if has_space:
+                print(f"\n   🚨 ERROR: {driver_name} SHOULD have been able to take this dog!")
+                print(f"      Distance: {min_distance:.0f} min (within {self.ABSOLUTE_MAX_TIME} limit)")
+                print(f"      Groups: driver has {driver_groups}, dog needs {dog_info['needed_groups']}")
+                print(f"      Capacity: {capacity_details}")
+                # Run detailed capacity check
+                self.debug_capacity_calculation(driver_name, self.dog_assignments, "(SHOULD WORK)")
+            else:
+                results['compatible_but_full'].append({
+                    'driver': driver_name,
+                    'distance': min_distance,
+                    'capacity_issue': capacity_details
+                })
+        
+        # Print summary
+        print(f"\n   📊 SUMMARY for {dog_info['dog_name']}:")
+        print(f"   - Too far (>{self.ABSOLUTE_MAX_TIME} min): {len(results['too_far'])} drivers")
+        print(f"   - Wrong groups: {len(results['wrong_groups'])} drivers")
+        print(f"   - Right groups but full: {len(results['compatible_but_full'])} drivers")
+        print(f"   - Called out: {len(results['called_out'])} drivers")
+        
+        # Show details for close but full drivers
+        if results['compatible_but_full']:
+            print(f"\n   🎯 CLOSE DRIVERS THAT WERE FULL:")
+            for item in sorted(results['compatible_but_full'], key=lambda x: x['distance'])[:5]:
+                print(f"   - {item['driver']} ({item['distance']:.0f} min): {'; '.join(item['capacity_issue'])}")
+        
+        # Show wrong groups details
+        if results['wrong_groups']:
+            print(f"\n   ❌ WRONG GROUP MATCHES (closest 5):")
+            for item in sorted(results['wrong_groups'], key=lambda x: x['distance'])[:5]:
+                print(f"   - {item['driver']} ({item['distance']:.0f} min): has groups {item['driver_groups']}, needs {item['needed_groups']}")
+
+    def verify_assignment_state(self, current_assignments, step_name=""):
+        """Verify the assignment state is consistent"""
+        print(f"\n🔍 VERIFYING ASSIGNMENT STATE {step_name}")
+        
+        # Check for duplicates
+        dog_counts = {}
+        for assignment in current_assignments:
+            dog_id = assignment.get('dog_id')
+            if dog_counts.get(dog_id):
+                dog_counts[dog_id] += 1
+            else:
+                dog_counts[dog_id] = 1
+        
+        duplicates = [(dog_id, count) for dog_id, count in dog_counts.items() if count > 1]
+        if duplicates:
+            print("   🚨 DUPLICATE DOGS IN ASSIGNMENTS:")
+            for dog_id, count in duplicates:
+                print(f"      - {dog_id} appears {count} times!")
+                # Find all instances
+                for assignment in current_assignments:
+                    if assignment.get('dog_id') == dog_id:
+                        print(f"        → Driver: {assignment.get('driver')}")
 
     def check_group_compatibility(self, callout_groups, driver_groups, distance, current_radius=None):
         """FIXED: Radius scaling with proper fallback and 75% adjacent threshold"""
@@ -933,6 +1148,12 @@ class DogReassignmentSystem:
                 print(f"       📊 {old_driver} load after move: {old_load}")
                 print(f"       📊 {best_target['driver']} load after move: {new_load}")
                 
+                # DEBUG: Special check for Chase
+                if old_driver == "Chase" or best_target['driver'] == "Chase":
+                    print(f"\n       🔍 SPECIAL DEBUG: Chase capacity after move")
+                    self.debug_capacity_calculation("Chase", current_assignments, "(after strategic move)")
+                    self.verify_assignment_state(current_assignments, f"after moving {dog_to_move['dog_name']}")
+                
                 return {
                     'moved_dog': dog_to_move,
                     'from_driver': old_driver,
@@ -1004,8 +1225,8 @@ class DogReassignmentSystem:
         print("=" * 80)
         
         # DEBUG MODE - Set to True to see detailed decision logging
-        DEBUG_MODE = False  # Change to True for detailed traces
-        DEBUG_DOGS = []     # Add specific dog names to trace, e.g. ["Fluffy", "Max"]
+        DEBUG_MODE = True  # ENABLED FOR DEBUGGING
+        DEBUG_DOGS = ["Frankie", "Shelby", "Tillie", "Singa"]  # Dogs to trace in detail
         
         dogs_to_reassign = self.get_dogs_to_reassign()
         
@@ -1382,6 +1603,9 @@ class DogReassignmentSystem:
             print("⚠️ These dogs could not be assigned within the 7 minute constraint!")
             
             for callout_dog in dogs_remaining:
+                # DEBUG: Analyze why this dog couldn't be assigned
+                self.debug_unassigned_dog(callout_dog)
+                
                 assignment_record = {
                     'dog_id': callout_dog['dog_id'],
                     'dog_name': callout_dog['dog_name'],
@@ -1966,6 +2190,12 @@ def main():
         print("❌ Failed to load driver capacities")
         return
     
+    # DEBUG: Check initial system state
+    print("\n🔍 INITIAL SYSTEM STATE DEBUG:")
+    for driver in ["Chase", "Hannah", "Blanch", "Ali", "Alyson"]:
+        if driver in system.driver_capacities:
+            system.debug_capacity_calculation(driver, system.dog_assignments, "(initial state)")
+    
     # Run the locality-first assignment with strategic cascading
     print("\n🔄 Processing callout assignments...")
     
@@ -1988,6 +2218,12 @@ def main():
         print("🔍 EVALUATING REASSIGNMENT DECISIONS")
         print("="*80)
         evaluate_reassignments(system, reassignments)
+        
+        # DEBUG: Check final system state
+        print("\n🔍 FINAL SYSTEM STATE DEBUG:")
+        for driver in ["Chase", "Hannah", "Blanch", "Ali", "Alyson"]:
+            if driver in system.driver_capacities:
+                system.debug_capacity_calculation(driver, system.dog_assignments, "(final state)")
         
         write_success = system.write_results_to_sheets(reassignments)
         if write_success:
