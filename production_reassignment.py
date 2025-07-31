@@ -28,18 +28,11 @@ HAVERSINE_MATRIX_URL = None  # Example: "https://docs.google.com/spreadsheets/d/
 HAVERSINE_SHEET_ID = None    # Example: "1421xCS86YH6hx0RcuZCyXkyBK_xl-VDSlXyDNvw09Pg"
 HAVERSINE_GID = None         # Example: "398422902"
 
-# Buddy System Configuration:
-# - BUDDY_THRESHOLD: How close dogs need to be to be considered buddies (default: 2 minutes)
-# - PRESERVE_BUDDIES: Whether to try to keep buddies together (default: True)
-# - BUDDY_PENALTY_FACTOR: How much to reduce isolation score for buddy pairs (default: 0.3)
-#
-# The system will:
-# 1. Detect "buddy" dogs that are within 2 minutes of each other
-# 2. Heavily penalize moving dogs that have buddies (reduced isolation score)
-# 3. Warn when buddy pairs are separated
-# 4. (Future) Try to move buddy pairs together to the same driver
-#
-# This prevents breaking up micro-clusters of 2-3 dogs that are outliers together
+# Conversion factor: miles to minutes
+# Urban areas: 3.0 (20 mph average)
+# Suburban areas: 2.5 (24 mph average)  
+# Rural areas: 2.0 (30 mph average)
+MILES_TO_MINUTES_FACTOR = 2.5
 
 class DogReassignmentSystem:
     def __init__(self):
@@ -59,11 +52,6 @@ class DogReassignmentSystem:
         # Conversion factor for haversine miles to drive time minutes
         # Adjust based on your area: urban=3, suburban=2.5, rural=2
         self.MILES_TO_MINUTES_FACTOR = 2.5
-        
-        # Buddy system configuration
-        self.BUDDY_THRESHOLD = 2.0  # Dogs within 2 minutes are considered buddies
-        self.PRESERVE_BUDDIES = True  # Try to keep buddy dogs together
-        self.BUDDY_PENALTY_FACTOR = 0.3  # How much to reduce isolation score for buddies
         
         # Legacy naming for minimal code changes
         self.PREFERRED_DISTANCE = self.PREFERRED_TIME
@@ -985,18 +973,12 @@ class DogReassignmentSystem:
         if callout_set.intersection(driver_set):
             return distance <= perfect_threshold
         
-        # 2. ADJACENT GROUPS - neighboring groups
-        # Using consistent adjacent mapping
-        adjacent_map = {
-            1: {2},      # Group 1 is adjacent to group 2
-            2: {1, 3},   # Group 2 is adjacent to groups 1 and 3
-            3: {2}       # Group 3 is adjacent to group 2
-        }
-        
+        # 2. ADJACENT GROUPS - neighboring groups  
+        adjacent_pairs = [(1, 2), (2, 3), (2, 1), (3, 2)]
         for callout_group in callout_set:
-            adjacent_to_callout = adjacent_map.get(callout_group, set())
-            if driver_set.intersection(adjacent_to_callout):
-                return distance <= adjacent_threshold
+            for driver_group in driver_set:
+                if (callout_group, driver_group) in adjacent_pairs:
+                    return distance <= adjacent_threshold
         
         # 3. NO MATCH - incompatible groups
         return False
@@ -1017,99 +999,9 @@ class DogReassignmentSystem:
         if not blocked_groups:
             print(f"   ❌ No blocked groups identified")
             return None
-    
-    def _consider_buddy_pair_move(self, dog_to_move, buddy_info, current_assignments, radius):
-        """Consider moving a buddy pair together to maintain their relationship"""
-        if not self.PRESERVE_BUDDIES or not buddy_info:
-            return None
-            
-        buddy_dog = buddy_info['dog']
-        print(f"       🐕‍🦺 Considering moving buddy pair together: {dog_to_move['dog_name']} & {buddy_dog['dog_name']}")
         
-        # Check if we can move both dogs to the same driver
-        # Both dogs must:
-        # 1. Fit within the target driver's capacity
-        # 2. Be within reasonable distance
-        # 3. Have compatible groups
-        
-        combined_groups = set(dog_to_move.get('needed_groups', []))
-        combined_groups.update(buddy_dog.get('needed_groups', []))
-        combined_num_dogs = dog_to_move.get('num_dogs', 1) + buddy_dog.get('num_dogs', 1)
-        
-        # Find drivers who could take both dogs
-        potential_targets = []
-        
-        for assignment in current_assignments:
-            target_driver = assignment['driver']
-            
-            # Skip same driver and called-out drivers
-            if target_driver == dog_to_move.get('driver') or target_driver in self.called_out_drivers:
-                continue
-            
-            # Check distances for both dogs
-            dist1 = self.get_distance(dog_to_move['dog_id'], assignment['dog_id'])
-            dist2 = self.get_distance(buddy_dog['dog_id'], assignment['dog_id'])
-            
-            # Both must be within radius
-            if dist1 > radius or dist2 > radius or dist1 >= self.EXCLUSION_TIME or dist2 >= self.EXCLUSION_TIME:
-                continue
-            
-            # Check group compatibility for both
-            target_groups = assignment.get('needed_groups', [])
-            if not (self.check_group_compatibility(dog_to_move.get('needed_groups', []), target_groups, dist1, radius) and
-                    self.check_group_compatibility(buddy_dog.get('needed_groups', []), target_groups, dist2, radius)):
-                continue
-            
-            # Check if driver has capacity for BOTH dogs
-            current_load = self.calculate_driver_load(target_driver, current_assignments)
-            capacity = self.driver_capacities.get(target_driver, {})
-            
-            can_fit_both = True
-            for group in combined_groups:
-                group_key = f'group{group}'
-                current = current_load.get(group_key, 0)
-                max_cap = capacity.get(group_key, 0)
-                
-                # Need space for both dogs
-                needed = combined_num_dogs if group in dog_to_move.get('needed_groups', []) and group in buddy_dog.get('needed_groups', []) else dog_to_move.get('num_dogs', 1) if group in dog_to_move.get('needed_groups', []) else buddy_dog.get('num_dogs', 1)
-                
-                if current + needed > max_cap:
-                    can_fit_both = False
-                    break
-            
-            if can_fit_both:
-                avg_distance = (dist1 + dist2) / 2
-                potential_targets.append({
-                    'driver': target_driver,
-                    'distance': avg_distance,
-                    'dist1': dist1,
-                    'dist2': dist2,
-                    'via_dog': assignment['dog_name']
-                })
-        
-        if potential_targets:
-            # Sort by average distance
-            potential_targets.sort(key=lambda x: x['distance'])
-            best = potential_targets[0]
-            
-            print(f"       🎯 Found option to move both buddies to {best['driver']}!")
-            print(f"          - {dog_to_move['dog_name']}: {best['dist1']:.0f} min")
-            print(f"          - {buddy_dog['dog_name']}: {best['dist2']:.0f} min")
-            
-            return {
-                'target_driver': best['driver'],
-                'buddy_dog': buddy_dog,
-                'distances': {'dog1': best['dist1'], 'dog2': best['dist2']},
-                'via_dog': best['via_dog']
-            }
-        
-        print(f"       ❌ No driver found who could take both buddies within {radius} min")
-        return None
-        
-        # Step 2: Get dogs from blocked driver, prioritized by strategy AND isolation
+        # Step 2: Get dogs from blocked driver, prioritized by strategy
         driver_dogs = self.get_current_driver_dogs(blocked_driver, current_assignments)
-        print(f"   🔍 Analyzing {len(driver_dogs)} dogs for strategic relocation...")
-        print(f"   📊 Using ISOLATION SCORING to find dogs that are far from others")
         strategic_dogs = self._prioritize_dogs_strategically(driver_dogs, blocked_groups)
         
         print(f"   📊 Strategic prioritization of {len(strategic_dogs)} dogs:")
@@ -1117,21 +1009,8 @@ class DogReassignmentSystem:
             print(f"     {i+1}. {dog['dog_name']} (groups: {dog['needed_groups']}) - {priority}")
         
         # Step 3: Try incremental radius expansion for each high-priority dog
-        print(f"\n   📊 Attempting moves in priority order (most isolated dogs first)...")
         for priority, dog_to_move in strategic_dogs:
-            if "LOW" in priority:
-                continue  # Skip dogs not in blocked groups
-                
             print(f"   🔄 Trying to move {dog_to_move['dog_name']} (groups: {dog_to_move['needed_groups']})...")
-            
-            # Get isolation score for this dog
-            isolation = self._calculate_isolation_score(dog_to_move, set(dog_to_move.get('needed_groups', [])))
-            if isolation >= 50:  # High isolation score
-                print(f"      📊 Good choice: Isolation score {isolation:.1f} (far from other dogs)")
-            elif isolation >= 20:
-                print(f"      📊 OK choice: Isolation score {isolation:.1f} (moderately isolated)")
-            else:
-                print(f"      📊 Poor choice: Isolation score {isolation:.1f} (close to many dogs)")
             
             # Use incremental radius expansion like the main algorithm
             move_result = self._attempt_incremental_move(dog_to_move, current_assignments, max_search_radius)
@@ -1141,13 +1020,6 @@ class DogReassignmentSystem:
                 print(f"      📦 Moved: {dog_to_move['dog_name']} → {move_result['to_driver']}")
                 print(f"      📏 Distance: {move_result['distance']:.0f} min (found at radius {move_result['radius']} min)")
                 print(f"      🎯 This frees {blocked_groups} capacity in {blocked_driver}")
-                print(f"      📊 Why this dog? It was isolated from others in its group (good to move)")
-                
-                # Note if a buddy was separated
-                if move_result.get('separated_buddy'):
-                    print(f"      💔 Note: Separated from buddy {move_result['separated_buddy']}")
-                    print(f"      💡 Consider: Moving buddies together in future updates")
-                
                 return move_result
             else:
                 print(f"   ❌ Could not move {dog_to_move['dog_name']} within {max_search_radius} min")
@@ -1182,205 +1054,38 @@ class DogReassignmentSystem:
         """Prioritize dogs based on strategic value for freeing blocked groups"""
         prioritized = []
         
-        print(f"\n   🎯 Calculating isolation scores for strategic dog selection...")
-        
         for dog in driver_dogs:
             dog_groups = set(dog.get('needed_groups', []))
             blocked_set = set(blocked_groups)
             
-            # Calculate strategic priority based on group membership
+            # Calculate strategic priority
             if dog_groups.intersection(blocked_set):
-                # Dog is in a blocked group - potential candidate
+                # Dog is in a blocked group - HIGH PRIORITY
                 if len(dog_groups) == 1 and dog['num_dogs'] == 1:
-                    base_priority = "HIGH - Single group, single dog in blocked group"
-                    priority_score = 1
+                    priority = "HIGH - Single group, single dog in blocked group"
                 elif len(dog_groups) == 1:
-                    base_priority = f"HIGH - Single group, {dog['num_dogs']} dogs in blocked group"
-                    priority_score = 2
+                    priority = f"HIGH - Single group, {dog['num_dogs']} dogs in blocked group"
                 else:
-                    base_priority = f"MEDIUM - Multi-group dog partially in blocked group"
-                    priority_score = 3
+                    priority = f"MEDIUM - Multi-group dog partially in blocked group"
             else:
-                # Dog is not in blocked groups - won't help
-                base_priority = "LOW - Not in blocked groups (won't help)"
-                priority_score = 10
-                prioritized.append((priority_score, 0, base_priority, dog))
-                continue
+                # Dog is not in blocked groups - LOW PRIORITY
+                priority = "LOW - Not in blocked groups (won't help)"
             
-            # Calculate isolation score - how far is this dog from others?
-            isolation_score = self._calculate_isolation_score(dog, dog_groups)
-            
-            # Combine priority and isolation for final ranking
-            # Lower score = higher priority (more isolated, better to move)
-            combined_score = priority_score - (isolation_score / 100.0)  # Normalize isolation impact
-            
-            prioritized.append((combined_score, isolation_score, base_priority, dog))
+            prioritized.append((priority, dog))
         
-        # Sort by combined score (lower = better to move)
-        prioritized.sort(key=lambda x: x[0])
+        # Sort by priority (HIGH first, then MEDIUM, then LOW)
+        priority_order = {"HIGH": 1, "MEDIUM": 2, "LOW": 3}
+        prioritized.sort(key=lambda x: (
+            priority_order.get(x[0].split(' - ')[0], 4),  # Priority level
+            len(x[1].get('needed_groups', [])),           # Fewer groups = easier to place
+            x[1].get('num_dogs', 1)                       # Fewer dogs = easier to place
+        ))
         
-        # Print top candidates with their isolation scores
-        print(f"   📊 Strategic prioritization of {len(prioritized)} dogs (with isolation scores):")
-        for i, (combined_score, isolation_score, priority, dog) in enumerate(prioritized[:8]):
-            print(f"     {i+1}. {dog['dog_name']} (groups: {dog['needed_groups']}) - {priority}")
-            print(f"        Isolation score: {isolation_score:.1f} (higher = more isolated = better to move)")
-        
-        # Return in the expected format
-        return [(priority, dog) for _, _, priority, dog in prioritized]
-    
-    def _calculate_isolation_score(self, dog, dog_groups):
-        """Calculate how isolated a dog is from others in same/adjacent groups"""
-        dog_id = dog['dog_id']
-        isolation_score = 0
-        distances_to_relevant_dogs = []
-        
-        # Define adjacent groups
-        adjacent_map = {
-            1: [1, 2],     # Group 1 is adjacent to groups 1 and 2
-            2: [1, 2, 3],  # Group 2 is adjacent to all groups
-            3: [2, 3]      # Group 3 is adjacent to groups 2 and 3
-        }
-        
-        # Get all relevant groups (dog's groups + adjacent groups)
-        relevant_groups = set()
-        for group in dog_groups:
-            relevant_groups.update(adjacent_map.get(group, [group]))
-        
-        # Track potential buddies (dogs very close to this one)
-        buddy_threshold = self.BUDDY_THRESHOLD  # Dogs within 2 minutes are potential buddies
-        potential_buddies = []
-        
-        # Check distance to all other dogs in relevant groups
-        for assignment in self.dog_assignments:
-            other_dog_id = assignment.get('dog_id')
-            if other_dog_id == dog_id:
-                continue
-            
-            # Get other dog's groups
-            combined = assignment.get('combined', '')
-            if ':' not in combined:
-                continue
-                
-            groups_str = combined.split(':', 1)[1]
-            other_groups = set(self._extract_groups_for_capacity_check(groups_str))
-            
-            # Check if other dog is in a relevant group
-            if other_groups.intersection(relevant_groups):
-                distance = self.get_distance(dog_id, other_dog_id)
-                
-                # Only consider reasonable distances (not placeholders)
-                if distance < self.EXCLUSION_TIME:
-                    distances_to_relevant_dogs.append(distance)
-                    
-                    # Check for buddy dogs
-                    if distance <= buddy_threshold:
-                        potential_buddies.append({
-                            'dog_id': other_dog_id,
-                            'dog_name': assignment.get('dog_name', 'Unknown'),
-                            'distance': distance
-                        })
-        
-        # Calculate isolation score
-        if distances_to_relevant_dogs:
-            # Check for buddy situation
-            if potential_buddies:
-                # This dog has buddies nearby - check if they form an isolated cluster
-                print(f"        🐕‍🦺 {dog['dog_name']} has {len(potential_buddies)} buddy(ies) within {buddy_threshold} min:")
-                for buddy in potential_buddies[:3]:  # Show up to 3 buddies
-                    print(f"           - {buddy['dog_name']} at {buddy['distance']:.1f} min")
-                
-                # Calculate cluster isolation
-                # Remove buddy distances from the calculation
-                buddy_distances = [b['distance'] for b in potential_buddies]
-                non_buddy_distances = [d for d in distances_to_relevant_dogs if d > buddy_threshold]
-                
-                if non_buddy_distances:
-                    # Dog has buddies but cluster is isolated from others
-                    avg_distance_to_others = sum(non_buddy_distances) / len(non_buddy_distances)
-                    
-                    # Penalize breaking up buddy pairs
-                    # Lower score = less isolated = less likely to move
-                    isolation_score = avg_distance_to_others * self.BUDDY_PENALTY_FACTOR  # Heavily reduce score
-                    
-                    print(f"        📊 Cluster isolation: avg dist to non-buddies = {avg_distance_to_others:.1f} min")
-                    print(f"        ⚠️  Reduced score to {isolation_score:.1f} to keep buddies together")
-                else:
-                    # Only buddies exist, no other dogs - this is a very isolated cluster
-                    # Still reduce score to keep them together
-                    isolation_score = 25.0  # Moderate score - consider as a unit
-                    print(f"        🏝️ Isolated cluster of {len(potential_buddies) + 1} dogs")
-            else:
-                # No buddies - true isolation
-                avg_distance = sum(distances_to_relevant_dogs) / len(distances_to_relevant_dogs)
-                
-                # Bonus for being far from the nearest dogs
-                nearest_distances = sorted(distances_to_relevant_dogs)[:5]
-                min_distance_bonus = min(nearest_distances) if nearest_distances else 0
-                
-                # Combined score: average distance + bonus for minimum distance
-                isolation_score = avg_distance + (min_distance_bonus * 0.5)
-                
-                print(f"        📏 {dog['dog_name']}: avg dist to {len(distances_to_relevant_dogs)} dogs = {avg_distance:.1f} min")
-                print(f"           Nearest 3: {sorted(distances_to_relevant_dogs)[:3]}")
-                print(f"        ✅ True isolation score: {isolation_score:.1f}")
-        else:
-            # No other dogs in relevant groups - extremely isolated
-            isolation_score = 100.0  # Maximum isolation
-            print(f"        📏 {dog['dog_name']}: No other dogs in relevant groups - MAX isolation")
-        
-        return isolation_score
-    
-    def _check_buddy_dogs(self, dog_to_move, current_assignments):
-        """Check if moving this dog would break up a buddy pair"""
-        dog_id = dog_to_move['dog_id']
-        buddy_threshold = self.BUDDY_THRESHOLD
-        
-        # Find current driver's other dogs
-        current_driver = dog_to_move.get('driver')
-        if not current_driver:
-            return None
-        
-        driver_dogs = [a for a in current_assignments if a.get('driver') == current_driver and a.get('dog_id') != dog_id]
-        
-        # Check for very close dogs
-        close_buddies = []
-        for other_dog in driver_dogs:
-            distance = self.get_distance(dog_id, other_dog['dog_id'])
-            if distance <= buddy_threshold:
-                close_buddies.append({
-                    'dog': other_dog,
-                    'distance': distance
-                })
-        
-        if close_buddies:
-            print(f"        ⚠️  Moving {dog_to_move['dog_name']} would separate from buddies:")
-            for buddy_info in close_buddies:
-                buddy = buddy_info['dog']
-                dist = buddy_info['distance']
-                print(f"           - {buddy['dog_name']} (only {dist:.1f} min away)")
-            
-            # Return the closest buddy
-            return min(close_buddies, key=lambda x: x['distance'])
-        
-        return None
+        return prioritized
 
     def _attempt_incremental_move(self, dog_to_move, current_assignments, max_radius):
         """Try to move a dog using incremental radius expansion - FIXED VERSION"""
         print(f"     🔍 Using incremental radius search for {dog_to_move['dog_name']}...")
-        
-        # Check for buddy dogs before moving
-        buddy_info = self._check_buddy_dogs(dog_to_move, current_assignments)
-        if buddy_info and self.PRESERVE_BUDDIES:
-            print(f"     🤔 Considering buddy relationships before move...")
-            
-            # Try to move buddies together first
-            buddy_pair_option = self._consider_buddy_pair_move(dog_to_move, buddy_info, current_assignments, current_radius)
-            if buddy_pair_option:
-                # Move both dogs together!
-                print(f"     🐕‍🦺 Moving buddy pair together to preserve relationship!")
-                # Implementation would go here - for now we just note it's possible
-                # In a full implementation, you'd execute both moves here
-                pass
         
         # Get the current driver before we move
         old_driver = dog_to_move.get('driver')
@@ -1403,33 +1108,19 @@ class DogReassignmentSystem:
         while current_radius <= max_radius:
             print(f"       📏 Trying radius {current_radius} minutes...")
             
-            # If we have a buddy, first try to move them together
-            if buddy_info and self.PRESERVE_BUDDIES:
-                buddy_pair_option = self._consider_buddy_pair_move(dog_to_move, buddy_info, current_assignments, current_radius)
-                if buddy_pair_option:
-                    print(f"       🐕‍🦺 Moving buddy pair together would be ideal!")
-                    print(f"       💡 Future enhancement: Implement buddy pair moves")
-                    # For now, continue with single dog move but note the separation
-            
             # Find all potential targets within current radius
             targets = self._find_move_targets_at_radius(dog_to_move, current_assignments, current_radius)
             
             if targets:
                 print(f"       ✅ Found {len(targets)} targets at {current_radius} min:")
                 for i, target in enumerate(targets[:3]):  # Show top 3
-                    density_info = f" (density: {target.get('density_score', 'N/A')})" if 'density_score' in target else ""
-                    print(f"         {i+1}. {target['driver']} - {target['distance']:.0f} min{density_info}")
+                    print(f"         {i+1}. {target['driver']} - {target['distance']:.0f} min")
                 
-                # Use the best target (already sorted by distance + density)
+                # Use the closest target
                 best_target = targets[0]
                 
                 # CRITICAL FIX: Properly update the assignment
                 print(f"       🔄 Moving {dog_to_move['dog_name']} from {old_driver} to {best_target['driver']}")
-                
-                # If there's a buddy, note the separation
-                if buddy_info:
-                    buddy_name = buddy_info['dog']['dog_name']
-                    print(f"       💔 Note: This separates {dog_to_move['dog_name']} from buddy {buddy_name}")
                 
                 # Remove ALL existing entries for this dog
                 before_count = len(current_assignments)
@@ -1469,8 +1160,7 @@ class DogReassignmentSystem:
                     'to_driver': best_target['driver'],
                     'distance': best_target['distance'],
                     'via_dog': best_target['via_dog'],
-                    'radius': current_radius,
-                    'separated_buddy': buddy_info['dog']['dog_name'] if buddy_info else None
+                    'radius': current_radius
                 }
             else:
                 print(f"       ❌ No targets at {current_radius} minutes")
@@ -1512,49 +1202,15 @@ class DogReassignmentSystem:
             
             # Check if target driver has capacity
             if self.check_driver_can_accept(target_driver, dog_to_move, current_assignments):
-                # Calculate isolation score for the target location
-                # Prefer moving to drivers who don't already have many nearby dogs
-                target_isolation = self._calculate_target_driver_density(target_driver, dog_groups, current_assignments)
-                
                 targets.append({
                     'driver': target_driver,
                     'distance': distance,
                     'via_dog': assignment['dog_name'],
-                    'via_dog_id': assignment['dog_id'],
-                    'density_score': target_isolation  # Lower = less dense = better
+                    'via_dog_id': assignment['dog_id']
                 })
         
-        # Sort by combination of distance and density
-        # Prefer closer targets, but also consider density
-        targets.sort(key=lambda x: x['distance'] + (x['density_score'] * 0.1))
-        
-        return targets
-    
-    def _calculate_target_driver_density(self, driver_name, incoming_groups, current_assignments):
-        """Calculate how dense/crowded a driver's area is for the incoming groups"""
-        # Count dogs in same/adjacent groups already with this driver
-        density_score = 0
-        
-        # Define adjacent groups
-        adjacent_map = {
-            1: [1, 2],
-            2: [1, 2, 3],
-            3: [2, 3]
-        }
-        
-        # Get all relevant groups
-        relevant_groups = set()
-        for group in incoming_groups:
-            relevant_groups.update(adjacent_map.get(group, [group]))
-        
-        # Count dogs in relevant groups with this driver
-        for assignment in current_assignments:
-            if assignment.get('driver') == driver_name:
-                assigned_groups = set(assignment.get('needed_groups', []))
-                if assigned_groups.intersection(relevant_groups):
-                    density_score += assignment.get('num_dogs', 1)
-        
-        return density_score
+        # Sort by distance (closest first)
+        return sorted(targets, key=lambda x: x['distance'])
 
     def locality_first_assignment(self):
         """Locality-first assignment algorithm with strategic cascading and TIGHT time constraints"""
@@ -2388,7 +2044,6 @@ class ReassignmentEvaluator:
                     beneficiary = parts[1]
                     print(f"   💡 This move freed space for: {beneficiary}")
                     print(f"   🎯 Strategic: Targeted specific blocked groups")
-                    print(f"   📊 Isolation: This dog was chosen because it was far from others")
     
     def _explain_individual_assignments(self):
         """Explain logic for specific assignments"""
@@ -2496,16 +2151,6 @@ def main():
     print("✅ CAPACITY FIXES: Duplicate tracking, safe assignments, verification at each step")
     print("⚠️ WARNING: Very tight constraints may result in unassigned dogs!")
     print("🔄 FALLBACK: If dog not in drive time matrix, will use haversine × 2.5 min/mile")
-    print("\n🆕 ISOLATION SCORING: When making cascading moves:")
-    print("   - Prioritizes moving dogs that are far from others in their group")
-    print("   - Considers adjacent groups (1↔2, 2↔3) for better distribution")
-    print("   - Avoids breaking up clusters of dogs")
-    print("   - Prefers moving to less dense areas")
-    print("\n🐕‍🦺 BUDDY SYSTEM: Preserves micro-clusters")
-    print("   - Dogs within 2 minutes are considered 'buddies'")
-    print("   - Heavily penalizes breaking up buddy pairs")
-    print("   - Isolated pairs stay together (treated as a unit)")
-    print("   - Prevents breaking up outlier clusters")
     print("=" * 80)
     
     # Initialize system
@@ -2513,11 +2158,6 @@ def main():
     
     # Set the conversion factor from global config
     system.MILES_TO_MINUTES_FACTOR = MILES_TO_MINUTES_FACTOR
-    
-    # Configure buddy system (optional - adjust as needed)
-    # system.BUDDY_THRESHOLD = 3.0  # Increase to 3 minutes for larger buddy radius
-    # system.PRESERVE_BUDDIES = False  # Set to False to allow breaking up buddies
-    # system.BUDDY_PENALTY_FACTOR = 0.5  # Increase to make it even harder to separate buddies
     
     # Setup Google Sheets client
     if not system.setup_google_sheets_client():
