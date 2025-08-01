@@ -2,6 +2,7 @@
 # COMPLETE WORKING VERSION: Locality-first with time-based constraints (3-7 minutes)
 # Drive time instead of miles, with VERY tight constraints
 # WITH HAVERSINE FALLBACK for missing entries
+# UPDATED: Improved group compatibility, route coherence, and neighbor assignment
 
 import pandas as pd
 import numpy as np
@@ -826,10 +827,14 @@ class DogReassignmentSystem:
             'wrong_groups': [],
             'no_capacity': [],
             'called_out': [],
-            'compatible_but_full': []
+            'compatible_but_full': [],
+            'bad_route_coherence': []
         }
         
         print(f"\n   Checking all {len(self.driver_capacities)} drivers...")
+        
+        # Build current assignments for checking
+        current_assignments = self.build_initial_assignments_state()
         
         for driver_name, capacity in self.driver_capacities.items():
             # Skip called-out drivers
@@ -837,21 +842,22 @@ class DogReassignmentSystem:
                 results['called_out'].append(driver_name)
                 continue
             
+            # Get all assignments for this driver
+            driver_assignments = [a for a in current_assignments if a.get('driver') == driver_name]
+            
+            if not driver_assignments:
+                continue  # Driver has no dogs assigned
+            
             # Find closest dog assigned to this driver
             min_distance = float('inf')
             closest_dog = None
-            driver_groups = []
             
-            for assignment in self.dog_assignments:
-                if assignment.get('combined', '').startswith(f"{driver_name}:"):
-                    dog_id = assignment['dog_id']
-                    distance = self.get_distance(dog_info['dog_id'], dog_id)
-                    if distance < min_distance:
-                        min_distance = distance
-                        closest_dog = assignment
-                        # Extract driver's groups
-                        groups_str = assignment['combined'].split(':', 1)[1]
-                        driver_groups = self._extract_groups_for_capacity_check(groups_str)
+            for assignment in driver_assignments:
+                dog_id = assignment['dog_id']
+                distance = self.get_distance(dog_info['dog_id'], dog_id)
+                if distance < min_distance:
+                    min_distance = distance
+                    closest_dog = assignment
             
             if min_distance == float('inf'):
                 continue
@@ -865,10 +871,15 @@ class DogReassignmentSystem:
                 })
                 continue
             
+            # Get ALL groups for this driver
+            driver_all_groups = []
+            for a in driver_assignments:
+                driver_all_groups.extend(a.get('needed_groups', []))
+            
             # Check group compatibility
             compatible = self.check_group_compatibility(
                 dog_info['needed_groups'], 
-                driver_groups, 
+                driver_all_groups, 
                 min_distance,
                 self.ABSOLUTE_MAX_TIME
             )
@@ -877,13 +888,21 @@ class DogReassignmentSystem:
                 results['wrong_groups'].append({
                     'driver': driver_name,
                     'distance': min_distance,
-                    'driver_groups': driver_groups,
+                    'driver_groups': list(set(driver_all_groups)),
                     'needed_groups': dog_info['needed_groups']
                 })
                 continue
             
+            # Check route coherence
+            if not self.check_route_coherence(dog_info['dog_id'], driver_name, current_assignments):
+                results['bad_route_coherence'].append({
+                    'driver': driver_name,
+                    'distance': min_distance
+                })
+                continue
+            
             # Check capacity
-            current_load = self.calculate_driver_load(driver_name)
+            current_load = self.calculate_driver_load(driver_name, current_assignments)
             has_space = True
             capacity_details = []
             
@@ -900,10 +919,9 @@ class DogReassignmentSystem:
             if has_space:
                 print(f"\n   🚨 ERROR: {driver_name} SHOULD have been able to take this dog!")
                 print(f"      Distance: {min_distance:.0f} min (within {self.ABSOLUTE_MAX_TIME} limit)")
-                print(f"      Groups: driver has {driver_groups}, dog needs {dog_info['needed_groups']}")
-                print(f"      Capacity: {capacity_details}")
-                # Run detailed capacity check
-                self.debug_capacity_calculation(driver_name, self.dog_assignments, "(SHOULD WORK)")
+                print(f"      Groups: driver has {list(set(driver_all_groups))}, dog needs {dog_info['needed_groups']}")
+                print(f"      Capacity: Available")
+                print(f"      Route coherence: Passed")
             else:
                 results['compatible_but_full'].append({
                     'driver': driver_name,
@@ -915,20 +933,18 @@ class DogReassignmentSystem:
         print(f"\n   📊 SUMMARY for {dog_info['dog_name']}:")
         print(f"   - Too far (>{self.ABSOLUTE_MAX_TIME} min): {len(results['too_far'])} drivers")
         print(f"   - Wrong groups: {len(results['wrong_groups'])} drivers")
+        print(f"   - Bad route coherence: {len(results['bad_route_coherence'])} drivers")
         print(f"   - Right groups but full: {len(results['compatible_but_full'])} drivers")
         print(f"   - Called out: {len(results['called_out'])} drivers")
+        
+        total_checked = sum(len(results[k]) for k in results)
+        print(f"   - TOTAL: {total_checked} drivers")
         
         # Show details for close but full drivers
         if results['compatible_but_full']:
             print(f"\n   🎯 CLOSE DRIVERS THAT WERE FULL:")
             for item in sorted(results['compatible_but_full'], key=lambda x: x['distance'])[:5]:
                 print(f"   - {item['driver']} ({item['distance']:.0f} min): {'; '.join(item['capacity_issue'])}")
-        
-        # Show wrong groups details
-        if results['wrong_groups']:
-            print(f"\n   ❌ WRONG GROUP MATCHES (closest 5):")
-            for item in sorted(results['wrong_groups'], key=lambda x: x['distance'])[:5]:
-                print(f"   - {item['driver']} ({item['distance']:.0f} min): has groups {item['driver_groups']}, needs {item['needed_groups']}")
 
     def verify_assignment_state(self, current_assignments, step_name=""):
         """Verify the assignment state is consistent"""
@@ -953,7 +969,7 @@ class DogReassignmentSystem:
                     if assignment.get('dog_id') == dog_id:
                         print(f"        → Driver: {assignment.get('driver')}")
 
-    def check_group_compatibility(self, callout_groups, driver_groups, distance, current_radius=None):
+    def check_group_compatibility(self, callout_groups, driver_all_groups, distance, current_radius=None):
         """UPDATED: Check if driver can handle all groups needed by the dog"""
         # Determine distance threshold based on current radius
         if current_radius is not None:
@@ -965,40 +981,26 @@ class DogReassignmentSystem:
         if distance > threshold:
             return False
         
-        # NEW LOGIC: For multi-group dogs like [1,2], check if driver covers ALL needed groups
-        # The driver doesn't need a single dog doing [1,2], just coverage of both groups
-        
-        # If driver_groups is a single list (old style), convert to list of lists
-        if driver_groups and not isinstance(driver_groups[0], list):
-            driver_groups = [driver_groups]
-        
-        # Get all unique groups the driver handles across ALL their dogs
-        driver_all_groups = set()
-        for groups in driver_groups:
-            if isinstance(groups, list):
-                driver_all_groups.update(groups)
-            else:
-                driver_all_groups.add(groups)
-        
-        # Get all unique groups the dog needs
+        # Convert to sets for easier comparison
+        driver_groups_set = set(driver_all_groups)  # Already a flat list
         callout_set = set(callout_groups)
         
         # Primary check: Does driver cover ALL groups the dog needs?
-        if callout_set.issubset(driver_all_groups):
+        if callout_set.issubset(driver_groups_set):
             return True
         
         # Fallback: Check adjacent groups with tighter distance
         adjacent_threshold = threshold * 0.75
         if distance <= adjacent_threshold:
             # Check if we can cover needed groups via adjacent groups
-            covered_groups = driver_all_groups.copy()
+            covered_groups = driver_groups_set.copy()
             
             # Add adjacent groups
-            if 1 in driver_all_groups:
+            if 1 in driver_groups_set:
                 covered_groups.add(2)  # 1 is adjacent to 2
-            if 2 in driver_all_groups:
+            if 2 in driver_groups_set:
                 covered_groups.update([1, 3])  # 2 is adjacent to both 1 and 3
-            if 3 in driver_all_groups:
+            if 3 in driver_groups_set:
                 covered_groups.add(2)  # 3 is adjacent to 2
             
             # Check again with adjacent groups included
@@ -1006,6 +1008,52 @@ class DogReassignmentSystem:
                 return True
         
         return False
+
+    def check_route_coherence(self, new_dog_id, driver_name, current_assignments, threshold=0.3):
+        """Check if adding this dog makes sense for the driver's route"""
+        # Get all dogs currently assigned to this driver
+        driver_dogs = [a for a in current_assignments if a.get('driver') == driver_name]
+        
+        if len(driver_dogs) < 2:
+            return True  # Not enough dogs to determine route coherence
+        
+        # Count how many of driver's dogs are within 5 minutes of new dog
+        nearby_count = 0
+        for dog_assignment in driver_dogs:
+            other_dog_id = dog_assignment.get('dog_id')
+            distance = self.get_distance(new_dog_id, other_dog_id)
+            if distance <= 5:  # Within 5 minutes
+                nearby_count += 1
+        
+        # Check if at least 30% of driver's dogs are nearby
+        nearby_ratio = nearby_count / len(driver_dogs)
+        return nearby_ratio >= threshold
+
+    def assign_neighbors(self, assigned_dog, driver, current_assignments, dogs_remaining, radius=1):
+        """When a dog is assigned, try to assign unassigned neighbors to same driver"""
+        assigned_neighbors = []
+        
+        for neighbor_dog in dogs_remaining[:]:  # Use slice to allow removal during iteration
+            # Check distance between assigned dog and potential neighbor
+            distance = self.get_distance(assigned_dog['dog_id'], neighbor_dog['dog_id'])
+            
+            if distance <= radius:  # Very close neighbor
+                # Check if driver can accept this neighbor
+                if self.check_driver_can_accept(driver, neighbor_dog, current_assignments):
+                    # Check group compatibility
+                    driver_all_assignments = [a for a in current_assignments if a.get('driver') == driver]
+                    driver_all_groups = []
+                    for a in driver_all_assignments:
+                        driver_all_groups.extend(a.get('needed_groups', []))
+                    
+                    if self.check_group_compatibility(neighbor_dog['needed_groups'], driver_all_groups, distance, self.ABSOLUTE_MAX_TIME):
+                        # Assign the neighbor
+                        print(f"   🏘️ Assigning neighbor {neighbor_dog['dog_name']} to {driver} (same as {assigned_dog['dog_name']})")
+                        if self.make_assignment_safely(neighbor_dog, driver, current_assignments):
+                            assigned_neighbors.append(neighbor_dog)
+                            dogs_remaining.remove(neighbor_dog)
+        
+        return assigned_neighbors
 
     def get_current_driver_dogs(self, driver_name, current_assignments):
         """Get all dogs currently assigned to a specific driver"""
@@ -1218,10 +1266,15 @@ class DogReassignmentSystem:
                 continue
             
             # Check group compatibility with current radius
-            dog_groups = dog_to_move.get('needed_groups', [])
-            target_groups = assignment.get('needed_groups', [])
+            # Get ALL groups for this driver
+            driver_all_assignments = [a for a in current_assignments if a.get('driver') == target_driver]
+            driver_all_groups = []
+            for a in driver_all_assignments:
+                driver_all_groups.extend(a.get('needed_groups', []))
             
-            if not self.check_group_compatibility(dog_groups, target_groups, distance, radius):
+            dog_groups = dog_to_move.get('needed_groups', [])
+            
+            if not self.check_group_compatibility(dog_groups, driver_all_groups, distance, radius):
                 continue
             
             # Check if target driver has capacity
@@ -1298,17 +1351,27 @@ class DogReassignmentSystem:
                 if distance >= self.EXCLUSION_TIME:
                     continue
                 
-                # Check group compatibility with distance requirements
-                compatible = self.check_group_compatibility(callout_dog['needed_groups'], assignment['needed_groups'], distance, self.PREFERRED_TIME)
+                # Check group compatibility - UPDATED to get ALL groups
+                driver_all_assignments = [a for a in current_assignments if a.get('driver') == driver]
+                driver_all_groups = []
+                for a in driver_all_assignments:
+                    driver_all_groups.extend(a.get('needed_groups', []))
+                
+                compatible = self.check_group_compatibility(callout_dog['needed_groups'], driver_all_groups, distance, self.PREFERRED_TIME)
+                
+                # Check route coherence - skip for very close assignments
+                coherent = True
+                if distance > 2:
+                    coherent = self.check_route_coherence(callout_dog['dog_id'], driver, current_assignments)
                 
                 # Check capacity
                 has_capacity = self.check_driver_can_accept(driver, callout_dog, current_assignments)
                 
                 # Debug logging
                 if DEBUG_MODE and (not DEBUG_DOGS or callout_dog['dog_name'] in DEBUG_DOGS) and distance <= self.PREFERRED_TIME:
-                    print(f"   Checking {driver}: dist={distance:.0f}min, groups={assignment['needed_groups']}, compatible={compatible}, capacity={has_capacity}")
+                    print(f"   Checking {driver}: dist={distance:.0f}min, groups={list(set(driver_all_groups))}, compatible={compatible}, coherent={coherent}, capacity={has_capacity}")
                 
-                if compatible and has_capacity:
+                if compatible and has_capacity and coherent:
                     if distance < best_distance:
                         best_assignment = {
                             'driver': driver,
@@ -1338,6 +1401,24 @@ class DogReassignmentSystem:
                     assignments_made.append(assignment_record)
                     dogs_assigned_step1.append(callout_dog)
                     print(f"   ✅ {callout_dog['dog_name']} → {driver} ({distance:.0f} min)")
+                    
+                    # Try to assign neighbors
+                    neighbors = self.assign_neighbors(callout_dog, driver, current_assignments, dogs_remaining)
+                    if neighbors:
+                        for n in neighbors:
+                            n_distance = self.get_distance(n['dog_id'], callout_dog['dog_id'])
+                            n_record = {
+                                'dog_id': n['dog_id'],
+                                'dog_name': n['dog_name'],
+                                'new_assignment': f"{driver}:{n['full_assignment_string']}",
+                                'driver': driver,
+                                'distance': n_distance,
+                                'quality': 'GOOD',
+                                'assignment_type': 'neighbor_assignment',
+                                'original_callout': n['original_callout']
+                            }
+                            assignments_made.append(n_record)
+                            dogs_assigned_step1.append(n)
             elif DEBUG_MODE and (not DEBUG_DOGS or callout_dog['dog_name'] in DEBUG_DOGS):
                 print(f"   ❌ No direct assignment found for {callout_dog['dog_name']} at ≤{self.PREFERRED_TIME} min")
         
@@ -1373,8 +1454,21 @@ class DogReassignmentSystem:
                     if distance >= self.EXCLUSION_TIME:
                         continue
                     
-                    # Check group compatibility
-                    if not self.check_group_compatibility(callout_dog['needed_groups'], assignment['needed_groups'], distance, self.PREFERRED_TIME):
+                    # Check group compatibility - UPDATED
+                    driver_all_assignments = [a for a in current_assignments if a.get('driver') == driver]
+                    driver_all_groups = []
+                    for a in driver_all_assignments:
+                        driver_all_groups.extend(a.get('needed_groups', []))
+                    
+                    if not self.check_group_compatibility(callout_dog['needed_groups'], driver_all_groups, distance, self.PREFERRED_TIME):
+                        continue
+                    
+                    # Check route coherence
+                    coherent = True
+                    if distance > 2:
+                        coherent = self.check_route_coherence(callout_dog['dog_id'], driver, current_assignments)
+                    
+                    if not coherent:
                         continue
                     
                     # Check if blocked by capacity
@@ -1467,25 +1561,38 @@ class DogReassignmentSystem:
                 # Try direct assignment at current radius
                 best_assignment = None
                 best_distance = float('inf')
+                blocked_drivers = []  # Track blocked drivers at this radius
                 
                 for assignment in current_assignments:
                     driver = assignment['driver']
                     
-                    # CRITICAL: Skip drivers who called out!
+                    # Skip called-out drivers
                     if hasattr(self, 'called_out_drivers') and driver in self.called_out_drivers:
                         continue
                     
                     distance = self.get_distance(callout_dog['dog_id'], assignment['dog_id'])
                     
-                    # Skip obvious placeholders
-                    if distance >= self.EXCLUSION_TIME:
+                    # Skip if beyond current radius or placeholder
+                    if distance > current_radius or distance >= self.EXCLUSION_TIME:
                         continue
                     
-                    if distance > current_radius:
+                    # Check group compatibility - FIX: Get ALL groups for driver
+                    driver_all_assignments = [a for a in current_assignments if a.get('driver') == driver]
+                    driver_all_groups = []
+                    for a in driver_all_assignments:
+                        driver_all_groups.extend(a.get('needed_groups', []))
+                    
+                    compatible = self.check_group_compatibility(callout_dog['needed_groups'], driver_all_groups, distance, current_radius)
+                    
+                    if not compatible:
                         continue
                     
-                    # Check group compatibility
-                    if not self.check_group_compatibility(callout_dog['needed_groups'], assignment['needed_groups'], distance, current_radius):
+                    # Check route coherence
+                    coherent = True
+                    if distance > 2:
+                        coherent = self.check_route_coherence(callout_dog['dog_id'], driver, current_assignments)
+                    
+                    if not coherent:
                         continue
                     
                     # Check capacity
@@ -1497,13 +1604,19 @@ class DogReassignmentSystem:
                                 'via_dog': assignment['dog_name']
                             }
                             best_distance = distance
+                    else:
+                        # Track blocked drivers for cascading
+                        blocked_drivers.append({
+                            'driver': driver,
+                            'distance': distance
+                        })
                 
                 if best_assignment:
                     # Direct assignment possible
                     driver = best_assignment['driver']
                     distance = best_assignment['distance']
                     
-                    # Determine quality with 3-way check
+                    # Determine quality
                     if distance <= self.PREFERRED_TIME:
                         quality = 'GOOD'
                     elif distance <= self.MAX_TIME:
@@ -1511,7 +1624,6 @@ class DogReassignmentSystem:
                     else:
                         quality = 'EMERGENCY'
                     
-                    # Use safe assignment
                     if self.make_assignment_safely(callout_dog, driver, current_assignments):
                         assignment_record = {
                             'dog_id': callout_dog['dog_id'],
@@ -1527,90 +1639,80 @@ class DogReassignmentSystem:
                         assignments_made.append(assignment_record)
                         dogs_assigned_this_radius.append(callout_dog)
                         print(f"   ✅ {callout_dog['dog_name']} → {driver} ({distance:.0f} min) [{quality}]")
-                
-                else:
-                    # Try strategic cascading moves at current radius
-                    blocked_drivers = []
-                    
-                    for assignment in current_assignments:
-                        driver = assignment['driver']
                         
-                        # CRITICAL: Skip drivers who called out!
-                        if hasattr(self, 'called_out_drivers') and driver in self.called_out_drivers:
-                            continue
-                        
-                        distance = self.get_distance(callout_dog['dog_id'], assignment['dog_id'])
-                        
-                        # Skip obvious placeholders
-                        if distance >= self.EXCLUSION_TIME:
-                            continue
-                        
-                        if distance > current_radius:
-                            continue
-                        
-                        # Check group compatibility
-                        if not self.check_group_compatibility(callout_dog['needed_groups'], assignment['needed_groups'], distance, current_radius):
-                            continue
-                        
-                        # Check if blocked by capacity
-                        if not self.check_driver_can_accept(driver, callout_dog, current_assignments):
-                            blocked_drivers.append({
-                                'driver': driver,
-                                'distance': distance
-                            })
-                    
-                    if blocked_drivers:
-                        blocked_drivers.sort(key=lambda x: x['distance'])
-                        best_blocked = blocked_drivers[0]
-                        
-                        # STRATEGIC CASCADING: Use current radius as max search distance
-                        move_result = self.attempt_strategic_cascading_move(
-                            best_blocked['driver'], 
-                            callout_dog, 
-                            current_assignments, 
-                            min(current_radius, self.CASCADING_MOVE_MAX_TIME)  # Cap at 6 min
-                        )
-                        
-                        if move_result:
-                            # Record the move
-                            moves_made.append({
-                                'dog_name': move_result['moved_dog']['dog_name'],
-                                'dog_id': move_result['moved_dog']['dog_id'],
-                                'from_driver': move_result['from_driver'],
-                                'to_driver': move_result['to_driver'],
-                                'distance': move_result['distance'],
-                                'reason': f"strategic_radius_{current_radius}_space_for_{callout_dog['dog_name']}"
-                            })
-                            
-                            # Assign the callout dog
-                            driver = best_blocked['driver']
-                            distance = best_blocked['distance']
-                            
-                            # Determine quality with 3-way check
-                            if distance <= self.PREFERRED_TIME:
-                                quality = 'GOOD'
-                            elif distance <= self.MAX_TIME:
-                                quality = 'BACKUP'
-                            else:
-                                quality = 'EMERGENCY'
-                            
-                            # Use safe assignment
-                            if self.make_assignment_safely(callout_dog, driver, current_assignments):
-                                assignment_record = {
-                                    'dog_id': callout_dog['dog_id'],
-                                    'dog_name': callout_dog['dog_name'],
-                                    'new_assignment': f"{driver}:{callout_dog['full_assignment_string']}",
+                        # Try to assign neighbors
+                        neighbors = self.assign_neighbors(callout_dog, driver, current_assignments, dogs_remaining)
+                        if neighbors:
+                            for n in neighbors:
+                                n_distance = self.get_distance(n['dog_id'], callout_dog['dog_id'])
+                                n_record = {
+                                    'dog_id': n['dog_id'],
+                                    'dog_name': n['dog_name'],
+                                    'new_assignment': f"{driver}:{n['full_assignment_string']}",
                                     'driver': driver,
-                                    'distance': distance,
-                                    'quality': quality,
-                                    'assignment_type': 'strategic_cascading_radius',
-                                    'original_callout': callout_dog['original_callout']
+                                    'distance': n_distance,
+                                    'quality': 'GOOD',
+                                    'assignment_type': 'neighbor_assignment',
+                                    'original_callout': n['original_callout']
                                 }
-                                
-                                assignments_made.append(assignment_record)
-                                dogs_assigned_this_radius.append(callout_dog)
-                                print(f"   ✅ {callout_dog['dog_name']} → {driver} ({distance:.0f} min) [{quality}]")
-                                print(f"      🎯 Strategic move: {move_result['moved_dog']['dog_name']} → {move_result['to_driver']} ({move_result['distance']:.0f} min at radius {move_result['radius']} min)")
+                                assignments_made.append(n_record)
+                                dogs_assigned_this_radius.append(n)
+                
+                # Try cascading at this radius if we have blocked drivers
+                elif blocked_drivers:
+                    # Sort by distance
+                    blocked_drivers.sort(key=lambda x: x['distance'])
+                    best_blocked = blocked_drivers[0]
+                    
+                    print(f"   🔄 Attempting cascading for {callout_dog['dog_name']} at radius {current_radius}")
+                    
+                    # Try strategic cascading with current radius as max
+                    move_result = self.attempt_strategic_cascading_move(
+                        best_blocked['driver'], 
+                        callout_dog, 
+                        current_assignments, 
+                        min(current_radius, self.CASCADING_MOVE_MAX_TIME)
+                    )
+                    
+                    if move_result:
+                        # Record the move
+                        moves_made.append({
+                            'dog_name': move_result['moved_dog']['dog_name'],
+                            'dog_id': move_result['moved_dog']['dog_id'],
+                            'from_driver': move_result['from_driver'],
+                            'to_driver': move_result['to_driver'],
+                            'distance': move_result['distance'],
+                            'reason': f"strategic_radius_{current_radius}_space_for_{callout_dog['dog_name']}"
+                        })
+                        
+                        # Assign the callout dog
+                        driver = best_blocked['driver']
+                        distance = best_blocked['distance']
+                        
+                        # Determine quality
+                        if distance <= self.PREFERRED_TIME:
+                            quality = 'GOOD'
+                        elif distance <= self.MAX_TIME:
+                            quality = 'BACKUP'
+                        else:
+                            quality = 'EMERGENCY'
+                        
+                        if self.make_assignment_safely(callout_dog, driver, current_assignments):
+                            assignment_record = {
+                                'dog_id': callout_dog['dog_id'],
+                                'dog_name': callout_dog['dog_name'],
+                                'new_assignment': f"{driver}:{callout_dog['full_assignment_string']}",
+                                'driver': driver,
+                                'distance': distance,
+                                'quality': quality,
+                                'assignment_type': 'strategic_cascading_radius',
+                                'original_callout': callout_dog['original_callout']
+                            }
+                            
+                            assignments_made.append(assignment_record)
+                            dogs_assigned_this_radius.append(callout_dog)
+                            print(f"   ✅ {callout_dog['dog_name']} → {driver} ({distance:.0f} min) [{quality}]")
+                            print(f"      🎯 Strategic move: {move_result['moved_dog']['dog_name']} → {move_result['to_driver']} ({move_result['distance']:.0f} min)")
             
             # Remove assigned dogs
             for dog in dogs_assigned_this_radius:
@@ -1618,7 +1720,7 @@ class DogReassignmentSystem:
             
             print(f"   📊 Radius {current_radius} min results: {len(dogs_assigned_this_radius)} assignments")
             
-            current_radius += 1  # Increment by 1 minute
+            current_radius += 1
             step_number += 1
         
         # Final step: Mark remaining as emergency
