@@ -1051,7 +1051,11 @@ class DogReassignmentSystem:
                         print(f"   🏘️ Assigning neighbor {neighbor_dog['dog_name']} to {driver} (same as {assigned_dog['dog_name']})")
                         if self.make_assignment_safely(neighbor_dog, driver, current_assignments):
                             assigned_neighbors.append(neighbor_dog)
-                            dogs_remaining.remove(neighbor_dog)
+                            # FIXED: Only remove if actually in the list
+                            if neighbor_dog in dogs_remaining:
+                                dogs_remaining.remove(neighbor_dog)
+                            else:
+                                print(f"   ⚠️ {neighbor_dog['dog_name']} already removed from remaining list")
         
         return assigned_neighbors
 
@@ -1329,13 +1333,16 @@ class DogReassignmentSystem:
             print(f"   🚫 Excluding called-out drivers: {', '.join(sorted(self.called_out_drivers))}")
         
         dogs_assigned_step1 = []
-            for callout_dog in dogs_remaining[:]:
-                # Skip if this dog was already assigned as a neighbor
-                if callout_dog not in dogs_remaining:
-                    continue
-                    
-                best_assignment = None
-                best_distance = float('inf')
+        for callout_dog in dogs_remaining[:]:
+            # Skip if this dog was already assigned as a neighbor
+            if callout_dog not in dogs_remaining:
+                continue
+            # Skip if this dog was already assigned as a neighbor
+            if callout_dog not in dogs_remaining:
+                continue
+                
+            best_assignment = None
+            best_distance = float('inf')
             
             # Debug logging for specific dogs
             if DEBUG_MODE and (not DEBUG_DOGS or callout_dog['dog_name'] in DEBUG_DOGS):
@@ -1442,6 +1449,10 @@ class DogReassignmentSystem:
             
             dogs_assigned_step2 = []
             for callout_dog in dogs_remaining[:]:
+                # Skip if this dog was already assigned as a neighbor
+                if callout_dog not in dogs_remaining:
+                    continue
+                    
                 # Find drivers within range but blocked by capacity
                 blocked_drivers = []
                 
@@ -1562,6 +1573,10 @@ class DogReassignmentSystem:
             dogs_assigned_this_radius = []
             
             for callout_dog in dogs_remaining[:]:
+                # Skip if this dog was already assigned as a neighbor
+                if callout_dog not in dogs_remaining:
+                    continue
+                    
                 # Try direct assignment at current radius
                 best_assignment = None
                 best_distance = float('inf')
@@ -1733,6 +1748,10 @@ class DogReassignmentSystem:
             print("⚠️ These dogs could not be assigned within the 7 minute constraint!")
             
             for callout_dog in dogs_remaining:
+                # Skip if this dog was already assigned somehow
+                if callout_dog not in dogs_remaining:
+                    continue
+                    
                 # DEBUG: Analyze why this dog couldn't be assigned
                 self.debug_unassigned_dog(callout_dog)
                 
