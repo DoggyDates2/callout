@@ -954,34 +954,58 @@ class DogReassignmentSystem:
                         print(f"        → Driver: {assignment.get('driver')}")
 
     def check_group_compatibility(self, callout_groups, driver_groups, distance, current_radius=None):
-        """FIXED: Radius scaling with proper fallback and 75% adjacent threshold"""
-        # Extract unique group numbers from both sets
-        callout_set = set(callout_groups)
-        driver_set = set(driver_groups)
-        
-        # Determine thresholds based on current radius
-        if current_radius is not None:
-            # RADIUS SCALING: Use the step-by-step approach
-            perfect_threshold = current_radius
-            adjacent_threshold = current_radius * 0.75  # 75% of current radius
-        else:
-            # FALLBACK: For diagnostics when no radius provided, use generous limits
-            perfect_threshold = self.ABSOLUTE_MAX_TIME  # Up to 7 minutes for exact matches
-            adjacent_threshold = self.ABSOLUTE_MAX_TIME * 0.75  # Up to ~5 minutes for adjacent groups
-        
-        # 1. PERFECT MATCH - same groups
-        if callout_set.intersection(driver_set):
-            return distance <= perfect_threshold
-        
-        # 2. ADJACENT GROUPS - neighboring groups  
-        adjacent_pairs = [(1, 2), (2, 3), (2, 1), (3, 2)]
-        for callout_group in callout_set:
-            for driver_group in driver_set:
-                if (callout_group, driver_group) in adjacent_pairs:
-                    return distance <= adjacent_threshold
-        
-        # 3. NO MATCH - incompatible groups
+    """UPDATED: Check if driver can handle all groups needed by the dog"""
+    # Determine distance threshold based on current radius
+    if current_radius is not None:
+        threshold = current_radius
+    else:
+        threshold = self.ABSOLUTE_MAX_TIME  # 7 minutes
+    
+    # Check if distance is within threshold
+    if distance > threshold:
         return False
+    
+    # NEW LOGIC: For multi-group dogs like [1,2], check if driver covers ALL needed groups
+    # The driver doesn't need a single dog doing [1,2], just coverage of both groups
+    
+    # If driver_groups is a single list (old style), convert to list of lists
+    if driver_groups and not isinstance(driver_groups[0], list):
+        driver_groups = [driver_groups]
+    
+    # Get all unique groups the driver handles across ALL their dogs
+    driver_all_groups = set()
+    for groups in driver_groups:
+        if isinstance(groups, list):
+            driver_all_groups.update(groups)
+        else:
+            driver_all_groups.add(groups)
+    
+    # Get all unique groups the dog needs
+    callout_set = set(callout_groups)
+    
+    # Primary check: Does driver cover ALL groups the dog needs?
+    if callout_set.issubset(driver_all_groups):
+        return True
+    
+    # Fallback: Check adjacent groups with tighter distance
+    adjacent_threshold = threshold * 0.75
+    if distance <= adjacent_threshold:
+        # Check if we can cover needed groups via adjacent groups
+        covered_groups = driver_all_groups.copy()
+        
+        # Add adjacent groups
+        if 1 in driver_all_groups:
+            covered_groups.add(2)  # 1 is adjacent to 2
+        if 2 in driver_all_groups:
+            covered_groups.update([1, 3])  # 2 is adjacent to both 1 and 3
+        if 3 in driver_all_groups:
+            covered_groups.add(2)  # 3 is adjacent to 2
+        
+        # Check again with adjacent groups included
+        if callout_set.issubset(covered_groups):
+            return True
+    
+    return False
 
     def get_current_driver_dogs(self, driver_name, current_assignments):
         """Get all dogs currently assigned to a specific driver"""
