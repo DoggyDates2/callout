@@ -1414,7 +1414,7 @@ class DogReassignmentSystem:
                     
                     assignments_made.append(assignment_record)
                     dogs_assigned_step1.append(callout_dog)
-                    print(f"   ✅ {callout_dog['dog_name']} → {driver} ({distance:.0f} min)")
+                    print(f"   ✅ {callout_dog['dog_name']} → {driver} ({distance:.0f} min via {best_assignment['via_dog']})")
                     
                     # Try to assign neighbors
                     neighbors = self.assign_neighbors(callout_dog, driver, current_assignments, dogs_remaining)
