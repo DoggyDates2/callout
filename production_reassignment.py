@@ -1326,6 +1326,9 @@ class DogReassignmentSystem:
         moves_made = []
         dogs_remaining = dogs_to_reassign.copy()
         
+        # Store partial results in case of error
+        self._partial_assignments = assignments_made
+        
         print(f"🐕 Processing {len(dogs_remaining)} callout dogs")
         
         print(f"\n📍 STEP 1: Direct assignments at ≤{self.PREFERRED_TIME} minutes")
@@ -1435,7 +1438,10 @@ class DogReassignmentSystem:
         
         # Remove assigned dogs
         for dog in dogs_assigned_step1:
-            dogs_remaining.remove(dog)
+            if dog in dogs_remaining:
+                dogs_remaining.remove(dog)
+            else:
+                print(f"   ⚠️ {dog['dog_name']} already removed from remaining list")
         
         print(f"   📊 Step 1 results: {len(dogs_assigned_step1)} direct assignments")
         
@@ -1554,7 +1560,10 @@ class DogReassignmentSystem:
             
             # Remove assigned dogs
             for dog in dogs_assigned_step2:
-                dogs_remaining.remove(dog)
+                if dog in dogs_remaining:
+                    dogs_remaining.remove(dog)
+                else:
+                    print(f"   ⚠️ {dog['dog_name']} already removed from remaining list")
             
             print(f"   📊 Step 2 results: {len(dogs_assigned_step2)} strategic cascading assignments")
             
@@ -1735,7 +1744,10 @@ class DogReassignmentSystem:
             
             # Remove assigned dogs
             for dog in dogs_assigned_this_radius:
-                dogs_remaining.remove(dog)
+                if dog in dogs_remaining:
+                    dogs_remaining.remove(dog)
+                else:
+                    print(f"   ⚠️ {dog['dog_name']} already removed from remaining list")
             
             print(f"   📊 Radius {current_radius} min results: {len(dogs_assigned_this_radius)} assignments")
             
@@ -1822,9 +1834,12 @@ class DogReassignmentSystem:
         try:
             return self.locality_first_assignment()
         except Exception as e:
-            print(f"⚠️ Locality-first algorithm failed: {e}")
-            print("🔄 Falling back to basic assignment...")
-            return []
+            print(f"⚠️ Locality-first algorithm encountered an error: {e}")
+            import traceback
+            print(f"🔍 Full error: {traceback.format_exc()}")
+            print("⚠️ Returning partial results if any were made...")
+            # Don't return empty list - let the caller handle partial results
+            return getattr(self, '_partial_assignments', [])
 
     def write_results_to_sheets(self, reassignments):
         """Write reassignment results and greedy walk moves back to Google Sheets"""
