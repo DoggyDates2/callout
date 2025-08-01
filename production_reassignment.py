@@ -1329,9 +1329,13 @@ class DogReassignmentSystem:
             print(f"   🚫 Excluding called-out drivers: {', '.join(sorted(self.called_out_drivers))}")
         
         dogs_assigned_step1 = []
-        for callout_dog in dogs_remaining[:]:
-            best_assignment = None
-            best_distance = float('inf')
+            for callout_dog in dogs_remaining[:]:
+                # Skip if this dog was already assigned as a neighbor
+                if callout_dog not in dogs_remaining:
+                    continue
+                    
+                best_assignment = None
+                best_distance = float('inf')
             
             # Debug logging for specific dogs
             if DEBUG_MODE and (not DEBUG_DOGS or callout_dog['dog_name'] in DEBUG_DOGS):
