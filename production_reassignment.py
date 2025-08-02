@@ -3,6 +3,7 @@
 # Direct distance instead of drive time conversion
 # WITH HAVERSINE FALLBACK for missing entries
 # UPDATED: Improved group compatibility, route coherence, and neighbor assignment
+# ENHANCED DEBUG: Added detailed debugging for unassigned dogs
 
 import pandas as pd
 import numpy as np
@@ -492,12 +493,18 @@ class DogReassignmentSystem:
 
     def get_distance(self, dog1_id: str, dog2_id: str) -> float:
         """Get distance between two dogs in miles"""
+        # DEBUG for specific dogs
+        debug_mode = ('1527x' in [dog1_id, dog2_id] and 'Sirius' in [dog1_id, dog2_id]) or \
+                    ('1527x' in [dog1_id, dog2_id] and '1505x' in [dog1_id, dog2_id])
+        
         try:
             # First try the distance matrix
             if self.distance_matrix is not None:
                 if dog1_id in self.distance_matrix.index and dog2_id in self.distance_matrix.columns:
                     distance = self.distance_matrix.loc[dog1_id, dog2_id]
                     if not pd.isna(distance):
+                        if debug_mode:
+                            print(f"      📏 DEBUG: Distance {dog1_id} → {dog2_id} = {float(distance):.2f} mi (from matrix)")
                         return float(distance)
             
             # Fallback: Try haversine matrix if available
@@ -507,13 +514,20 @@ class DogReassignmentSystem:
                     if not pd.isna(distance):
                         # Only print for reasonable distances (not placeholders)
                         if distance < 50:  # Reasonable distance threshold
-                            print(f"📏 Haversine fallback: {dog1_id} → {dog2_id} = {distance:.1f} mi")
+                            if debug_mode:
+                                print(f"      📏 DEBUG: Distance {dog1_id} → {dog2_id} = {float(distance):.2f} mi (haversine fallback)")
+                            else:
+                                print(f"📏 Haversine fallback: {dog1_id} → {dog2_id} = {distance:.1f} mi")
                         return float(distance)
             
             # If both matrices fail, return infinity
+            if debug_mode:
+                print(f"      📏 DEBUG: Distance {dog1_id} → {dog2_id} = INF (not found in matrices)")
             return float('inf')
             
         except Exception as e:
+            if debug_mode:
+                print(f"      📏 DEBUG: Distance {dog1_id} → {dog2_id} = INF (error: {e})")
             return float('inf')
 
     def calculate_driver_load(self, driver_name: str, current_assignments: List = None) -> Dict:
@@ -691,14 +705,29 @@ class DogReassignmentSystem:
         current_load = self.calculate_driver_load(driver_name, current_assignments)
         capacity = self.driver_capacities.get(driver_name, {})
         
+        # DEBUG MODE for specific dogs/drivers
+        debug_mode = (callout_dog['dog_name'] in ['Keegan', 'Winston', 'Leo', 'Scout'] and 
+                     driver_name in ['Hannah', 'Leen', 'Sara'])
+        
+        if debug_mode:
+            print(f"\n      🔍 DEBUG check_driver_can_accept: {callout_dog['dog_name']} → {driver_name}")
+            print(f"         Dog needs groups: {callout_dog['needed_groups']}, num_dogs: {callout_dog['num_dogs']}")
+        
         for group in callout_dog['needed_groups']:
             group_key = f'group{group}'
             current = current_load.get(group_key, 0)
             max_cap = capacity.get(group_key, 0)
             needed = callout_dog['num_dogs']
             
+            if debug_mode:
+                can_fit = current + needed <= max_cap
+                print(f"         Group {group}: current={current} + needed={needed} = {current+needed} {'<=' if can_fit else '>'} max={max_cap} → {'✅' if can_fit else '❌'}")
+            
             if current + needed > max_cap:
                 return False
+        
+        if debug_mode:
+            print(f"         ✅ Driver CAN accept dog")
         
         return True
 
@@ -801,6 +830,14 @@ class DogReassignmentSystem:
         print(f"   Needs groups: {dog_info['needed_groups']}")
         print(f"   Number of dogs: {dog_info['num_dogs']}")
         
+        # Special check for Keegan
+        if dog_info['dog_name'] == 'Keegan':
+            print(f"\n   🎯 SPECIAL KEEGAN ANALYSIS:")
+            print(f"   Looking for Sirius (1505x) who is with Hannah...")
+            # Check distance to Sirius specifically
+            sirius_distance = self.get_distance(dog_info['dog_id'], '1505x')
+            print(f"   Distance to Sirius: {sirius_distance:.2f} mi")
+        
         # Categorize all drivers
         results = {
             'too_far': [],
@@ -815,6 +852,14 @@ class DogReassignmentSystem:
         
         # Build current assignments for checking
         current_assignments = self.build_initial_assignments_state()
+        
+        # DEBUG: Find Hannah's dogs specifically
+        hannah_dogs = [a for a in current_assignments if a.get('driver') == 'Hannah']
+        if hannah_dogs:
+            print(f"\n   📍 Hannah has {len(hannah_dogs)} dogs:")
+            for hdog in hannah_dogs[:5]:  # Show first 5
+                distance = self.get_distance(dog_info['dog_id'], hdog['dog_id'])
+                print(f"      - {hdog['dog_name']} ({hdog['dog_id']}): {distance:.2f} mi away")
         
         for driver_name, capacity in self.driver_capacities.items():
             # Skip called-out drivers
@@ -1562,11 +1607,22 @@ class DogReassignmentSystem:
                 # Skip if this dog was already assigned as a neighbor
                 if callout_dog not in dogs_remaining:
                     continue
+                
+                # ENHANCED DEBUG for specific dogs
+                debug_this_dog = callout_dog['dog_name'] in ['Keegan', 'Winston', 'Leo', 'Scout']
+                if debug_this_dog:
+                    print(f"\n   🔍 DEBUG: Processing {callout_dog['dog_name']} at radius {current_radius}")
+                    print(f"      Dog ID: {callout_dog['dog_id']}")
+                    print(f"      Needs groups: {callout_dog['needed_groups']}")
+                    # Special check for Keegan and Sirius
+                    if callout_dog['dog_name'] == 'Keegan':
+                        print(f"      🎯 Special check: Looking for Sirius (1505x)...")
                     
                 # Try direct assignment at current radius
                 best_assignment = None
                 best_distance = float('inf')
                 blocked_drivers = []  # Track blocked drivers at this radius
+                drivers_checked = 0
                 
                 for assignment in current_assignments:
                     driver = assignment['driver']
@@ -1581,6 +1637,8 @@ class DogReassignmentSystem:
                     if distance > current_radius or distance >= self.EXCLUSION_DISTANCE:
                         continue
                     
+                    drivers_checked += 1
+                    
                     # Check group compatibility - FIX: Get ALL groups for driver
                     driver_all_assignments = [a for a in current_assignments if a.get('driver') == driver]
                     driver_all_groups = []
@@ -1588,6 +1646,10 @@ class DogReassignmentSystem:
                         driver_all_groups.extend(a.get('needed_groups', []))
                     
                     compatible = self.check_group_compatibility(callout_dog['needed_groups'], driver_all_groups, distance, current_radius)
+                    
+                    # DEBUG: Show checks for specific drivers
+                    if debug_this_dog and distance <= current_radius and 'Hannah' in driver:
+                        print(f"      Checking {driver}: distance={distance:.2f}, groups={list(set(driver_all_groups))}, compatible={compatible}")
                     
                     if not compatible:
                         continue
@@ -1598,10 +1660,26 @@ class DogReassignmentSystem:
                         coherent = self.check_route_coherence(callout_dog['dog_id'], driver, current_assignments)
                     
                     if not coherent:
+                        if debug_this_dog:
+                            print(f"      {driver} failed route coherence check")
                         continue
                     
                     # Check capacity
-                    if self.check_driver_can_accept(driver, callout_dog, current_assignments):
+                    has_capacity = self.check_driver_can_accept(driver, callout_dog, current_assignments)
+                    
+                    # DEBUG: Show capacity check for Hannah
+                    if debug_this_dog and 'Hannah' in driver:
+                        load = self.calculate_driver_load(driver, current_assignments)
+                        capacity = self.driver_capacities.get(driver, {})
+                        print(f"      {driver} capacity check:")
+                        for group in callout_dog['needed_groups']:
+                            group_key = f'group{group}'
+                            current = load.get(group_key, 0)
+                            max_cap = capacity.get(group_key, 0)
+                            needed = callout_dog['num_dogs']
+                            print(f"         Group {group}: {current} + {needed} {'<=' if current + needed <= max_cap else '>'} {max_cap} = {has_capacity}")
+                    
+                    if has_capacity:
                         if distance < best_distance:
                             best_assignment = {
                                 'driver': driver,
@@ -1613,8 +1691,14 @@ class DogReassignmentSystem:
                         # Track blocked drivers for cascading
                         blocked_drivers.append({
                             'driver': driver,
-                            'distance': distance
+                            'distance': distance,
+                            'via_dog': assignment['dog_name']
                         })
+                        if debug_this_dog:
+                            print(f"      ✅ Added {driver} to blocked_drivers list (no capacity)")
+                
+                if debug_this_dog:
+                    print(f"      Summary: {drivers_checked} drivers checked, {len(blocked_drivers)} blocked by capacity")
                 
                 if best_assignment:
                     # Direct assignment possible
@@ -1665,11 +1749,17 @@ class DogReassignmentSystem:
                 
                 # Try cascading at this radius if we have blocked drivers
                 elif blocked_drivers:
+                    if debug_this_dog:
+                        print(f"      🔄 {len(blocked_drivers)} blocked drivers found, attempting cascading...")
+                        for bd in blocked_drivers[:3]:  # Show first 3
+                            print(f"         - {bd['driver']} at {bd['distance']:.2f} mi via {bd.get('via_dog', 'unknown')}")
+                    
                     # Sort by distance
                     blocked_drivers.sort(key=lambda x: x['distance'])
                     best_blocked = blocked_drivers[0]
                     
                     print(f"   🔄 Attempting cascading for {callout_dog['dog_name']} at radius {current_radius}")
+                    print(f"      Target driver: {best_blocked['driver']} at {best_blocked['distance']:.2f} mi")
                     
                     # Try strategic cascading with current radius as max
                     move_result = self.attempt_strategic_cascading_move(
@@ -1718,6 +1808,28 @@ class DogReassignmentSystem:
                             dogs_assigned_this_radius.append(callout_dog)
                             print(f"   ✅ {callout_dog['dog_name']} → {driver} ({distance:.1f} mi) [{quality}]")
                             print(f"      🎯 Strategic move: {move_result['moved_dog']['dog_name']} → {move_result['to_driver']} ({move_result['distance']:.1f} mi)")
+                
+                else:
+                    if debug_this_dog:
+                        print(f"      ❌ No direct assignment or blocked drivers found")
+                        print(f"      Closest driver analysis:")
+                        # Show closest few drivers for debugging
+                        close_drivers = []
+                        for assignment in current_assignments:
+                            driver = assignment['driver']
+                            if hasattr(self, 'called_out_drivers') and driver in self.called_out_drivers:
+                                continue
+                            distance = self.get_distance(callout_dog['dog_id'], assignment['dog_id'])
+                            if distance <= current_radius + 1:  # Show slightly beyond radius
+                                close_drivers.append({
+                                    'driver': driver,
+                                    'distance': distance,
+                                    'dog': assignment['dog_name'],
+                                    'dog_id': assignment['dog_id']
+                                })
+                        close_drivers.sort(key=lambda x: x['distance'])
+                        for cd in close_drivers[:5]:
+                            print(f"         {cd['driver']} via {cd['dog']} ({cd['dog_id']}): {cd['distance']:.2f} mi")
             
             # Remove assigned dogs
             for dog in dogs_assigned_this_radius:
