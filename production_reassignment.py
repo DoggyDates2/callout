@@ -4,6 +4,7 @@
 # WITH HAVERSINE FALLBACK for missing entries
 # UPDATED: Improved group compatibility, route coherence, and neighbor assignment
 # ENHANCED DEBUG: Added detailed debugging for unassigned dogs
+# ROUTE COHERENCE: 25% of dogs within 3 miles (relaxed from 30% within 2.5 miles)
 
 import pandas as pd
 import numpy as np
@@ -471,6 +472,23 @@ class DogReassignmentSystem:
         if called_out_drivers:
             print(f"\n🚫 Drivers who called out (will be excluded): {', '.join(sorted(called_out_drivers))}")
         
+        # Check if dogs are in distance matrix
+        print(f"\n🔍 Checking if callout dogs are in distance matrix...")
+        for dog in dogs_to_reassign:
+            dog_id = dog['dog_id']
+            if self.distance_matrix is not None:
+                if dog_id not in self.distance_matrix.index:
+                    print(f"   ⚠️ {dog['dog_name']} ({dog_id}) NOT FOUND in distance matrix!")
+                else:
+                    # Check if this dog has any valid distances
+                    valid_distances = 0
+                    for other_id in self.distance_matrix.columns[:20]:  # Check first 20
+                        dist = self.distance_matrix.loc[dog_id, other_id]
+                        if not pd.isna(dist) and dist < 50:
+                            valid_distances += 1
+                    if valid_distances == 0:
+                        print(f"   ⚠️ {dog['dog_name']} ({dog_id}) has NO VALID distances in matrix!")
+        
         # Store called out drivers in the class
         self.called_out_drivers = called_out_drivers
         
@@ -857,9 +875,22 @@ class DogReassignmentSystem:
         hannah_dogs = [a for a in current_assignments if a.get('driver') == 'Hannah']
         if hannah_dogs:
             print(f"\n   📍 Hannah has {len(hannah_dogs)} dogs:")
+            close_count = 0
+            missing_count = 0
             for hdog in hannah_dogs[:5]:  # Show first 5
                 distance = self.get_distance(dog_info['dog_id'], hdog['dog_id'])
-                print(f"      - {hdog['dog_name']} ({hdog['dog_id']}): {distance:.2f} mi away")
+                if distance >= 50:  # Likely missing data
+                    print(f"      - {hdog['dog_name']} ({hdog['dog_id']}): MISSING DATA (shows as {distance:.0f} mi)")
+                    missing_count += 1
+                else:
+                    print(f"      - {hdog['dog_name']} ({hdog['dog_id']}): {distance:.2f} mi away")
+                    if distance <= 3.0:
+                        close_count += 1
+            if len(hannah_dogs) > 5:
+                print(f"      ... and {len(hannah_dogs) - 5} more dogs")
+            print(f"   📊 Route coherence: {close_count}/{len(hannah_dogs)} within 3 mi = {close_count/len(hannah_dogs)*100:.0f}%")
+            if missing_count > 0:
+                print(f"   ⚠️ Missing distance data for {missing_count} dogs!")
         
         for driver_name, capacity in self.driver_capacities.items():
             # Skip called-out drivers
@@ -1034,7 +1065,7 @@ class DogReassignmentSystem:
         
         return False
 
-    def check_route_coherence(self, new_dog_id, driver_name, current_assignments, threshold=0.3):
+    def check_route_coherence(self, new_dog_id, driver_name, current_assignments, threshold=0.25):
         """Check if adding this dog makes sense for the driver's route"""
         # Get all dogs currently assigned to this driver
         driver_dogs = [a for a in current_assignments if a.get('driver') == driver_name]
@@ -1042,17 +1073,33 @@ class DogReassignmentSystem:
         if len(driver_dogs) < 2:
             return True  # Not enough dogs to determine route coherence
         
-        # Count how many of driver's dogs are within 2.5 miles of new dog
+        # DEBUG mode for specific dogs
+        debug_mode = new_dog_id in ['1527x', '1529x', '1535x', '1714x']
+        
+        # Count how many of driver's dogs are within 3 miles of new dog
         nearby_count = 0
+        missing_count = 0
+        
         for dog_assignment in driver_dogs:
             other_dog_id = dog_assignment.get('dog_id')
             distance = self.get_distance(new_dog_id, other_dog_id)
-            if distance <= 2.5:  # Within 2.5 miles
+            
+            # Track missing distances (100+ miles)
+            if distance >= 50:  # Likely a placeholder
+                missing_count += 1
+            elif distance <= 3.0:  # Within 3 miles (increased from 2.5)
                 nearby_count += 1
         
-        # Check if at least 30% of driver's dogs are nearby
+        # Check if at least 25% of driver's dogs are nearby (reduced from 30%)
         nearby_ratio = nearby_count / len(driver_dogs)
-        return nearby_ratio >= threshold
+        passes = nearby_ratio >= threshold
+        
+        if debug_mode:
+            print(f"      Route coherence for {new_dog_id} → {driver_name}:")
+            print(f"         Total dogs: {len(driver_dogs)}, Nearby (≤3mi): {nearby_count}, Missing data: {missing_count}")
+            print(f"         Ratio: {nearby_count}/{len(driver_dogs)} = {nearby_ratio:.1%} {'≥' if passes else '<'} 25% → {'PASS' if passes else 'FAIL'}")
+        
+        return passes
 
     def assign_neighbors(self, assigned_dog, driver, current_assignments, dogs_remaining, radius=0.5):
         """When a dog is assigned, try to assign unassigned neighbors to same driver"""
@@ -1308,6 +1355,7 @@ class DogReassignmentSystem:
             
             # Check if target driver has capacity
             if self.check_driver_can_accept(target_driver, dog_to_move, current_assignments):
+                # Additional route coherence check could go here if needed
                 targets.append({
                     'driver': target_driver,
                     'distance': distance,
@@ -1506,7 +1554,7 @@ class DogReassignmentSystem:
                     if not self.check_group_compatibility(callout_dog['needed_groups'], driver_all_groups, distance, self.PREFERRED_DISTANCE):
                         continue
                     
-                    # Check route coherence
+                    # Check route coherence - skip for very close assignments
                     coherent = True
                     if distance > 1:
                         coherent = self.check_route_coherence(callout_dog['dog_id'], driver, current_assignments)
@@ -1654,7 +1702,7 @@ class DogReassignmentSystem:
                     if not compatible:
                         continue
                     
-                    # Check route coherence
+                    # Check route coherence - skip for very close assignments
                     coherent = True
                     if distance > 1:
                         coherent = self.check_route_coherence(callout_dog['dog_id'], driver, current_assignments)
@@ -1820,16 +1868,21 @@ class DogReassignmentSystem:
                             if hasattr(self, 'called_out_drivers') and driver in self.called_out_drivers:
                                 continue
                             distance = self.get_distance(callout_dog['dog_id'], assignment['dog_id'])
-                            if distance <= current_radius + 1:  # Show slightly beyond radius
+                            # Only include reasonable distances
+                            if distance < 50:  # Skip obvious placeholders
                                 close_drivers.append({
                                     'driver': driver,
                                     'distance': distance,
                                     'dog': assignment['dog_name'],
                                     'dog_id': assignment['dog_id']
                                 })
-                        close_drivers.sort(key=lambda x: x['distance'])
-                        for cd in close_drivers[:5]:
-                            print(f"         {cd['driver']} via {cd['dog']} ({cd['dog_id']}): {cd['distance']:.2f} mi")
+                        
+                        if not close_drivers:
+                            print(f"         ⚠️ NO VALID DISTANCES FOUND - Dog may be missing from distance matrix!")
+                        else:
+                            close_drivers.sort(key=lambda x: x['distance'])
+                            for cd in close_drivers[:5]:
+                                print(f"         {cd['driver']} via {cd['dog']} ({cd['dog_id']}): {cd['distance']:.2f} mi")
             
             # Remove assigned dogs
             for dog in dogs_assigned_this_radius:
@@ -2402,6 +2455,7 @@ def main():
     print("📊 Quality: GOOD ≤1.5 mi, BACKUP ≤2.5 mi, EMERGENCY >2.5 mi")
     print("🎯 TIGHT CONSTRAINTS: Exact matches ≤3.5 mi, Adjacent groups ≤2.6 mi")
     print("✅ CAPACITY FIXES: Duplicate tracking, safe assignments, verification at each step")
+    print("🗺️ ROUTE COHERENCE: 25% of dogs within 3 miles (relaxed for missing data)")
     print("⚠️ WARNING: Very tight constraints may result in unassigned dogs!")
     print("🔄 FALLBACK: If dog not in distance matrix, will use haversine distances")
     print("=" * 80)
@@ -2442,9 +2496,13 @@ def main():
     
     # DEBUG: Check initial system state
     print("\n🔍 INITIAL SYSTEM STATE DEBUG:")
+    
+    # Build initial state for debug
+    initial_state = system.build_initial_assignments_state()
+    
     for driver in ["Chase", "Hannah", "Blanch", "Ali", "Alyson"]:
         if driver in system.driver_capacities:
-            system.debug_capacity_calculation(driver, system.dog_assignments, "(initial state)")
+            system.debug_capacity_calculation(driver, initial_state, "(initial state)")
     
     # Run the locality-first assignment with strategic cascading
     print("\n🔄 Processing callout assignments...")
@@ -2471,9 +2529,13 @@ def main():
         
         # DEBUG: Check final system state
         print("\n🔍 FINAL SYSTEM STATE DEBUG:")
+        
+        # Build final state for debug  
+        final_state = system.build_initial_assignments_state()
+        
         for driver in ["Chase", "Hannah", "Blanch", "Ali", "Alyson"]:
             if driver in system.driver_capacities:
-                system.debug_capacity_calculation(driver, system.dog_assignments, "(final state)")
+                system.debug_capacity_calculation(driver, final_state, "(final state)")
         
         write_success = system.write_results_to_sheets(reassignments)
         if write_success:
