@@ -1,10 +1,11 @@
-# production_reassignment_distance_based.py
+# production_reassignment.py
 # COMPLETE WORKING VERSION: Locality-first with distance-based constraints (miles)
 # Direct distance instead of drive time conversion
 # WITH HAVERSINE FALLBACK for missing entries
 # UPDATED: Improved group compatibility, route coherence, and neighbor assignment
 # ENHANCED DEBUG: Added detailed debugging for unassigned dogs
 # ROUTE COHERENCE: 25% of dogs within 3 miles (relaxed from 30% within 2.5 miles)
+# FIXED: Google Sheets API loading issues and CSV export problems
 
 import pandas as pd
 import numpy as np
@@ -37,6 +38,9 @@ class DogReassignmentSystem:
         # Google Sheets URLs (CSV export format)
         self.DISTANCE_MATRIX_URL = "https://docs.google.com/spreadsheets/d/1421xCS86YH6hx0RcuZCyXkyBK_xl-VDSlXyDNvw09Pg/export?format=csv&gid=398422902"
         self.MAP_SHEET_URL = "https://docs.google.com/spreadsheets/d/1mg8d5CLxSR54KhNUL8SpL5jzrGN-bghTsC9vxSK8lR0/export?format=csv&gid=267803750"
+        
+        # Option to skip CSV and use API directly (set to True if CSV export is failing)
+        self.USE_API_DIRECTLY = True  # Changed to True to skip problematic CSV export
         
         # DISTANCE LIMITS - LOCALITY-FIRST THRESHOLDS (in miles)
         self.PREFERRED_DISTANCE = 1.5        # Ideal assignments: ≤1.5 miles
@@ -90,12 +94,30 @@ class DogReassignmentSystem:
         try:
             print("📊 Loading distance matrix (in miles)...")
             
-            # Try CSV export first (simpler and was working before)
-            max_retries = 3
-            for attempt in range(max_retries):
+            # Check if we should skip CSV and go straight to API
+            if self.USE_API_DIRECTLY:
+                print("📋 Using Google Sheets API directly (CSV export disabled)")
+                return self.load_distance_matrix_via_api()
+            
+            # Try different CSV export URL formats
+            urls_to_try = [
+                self.DISTANCE_MATRIX_URL,
+                # Alternative format without gid parameter
+                f"https://docs.google.com/spreadsheets/d/1421xCS86YH6hx0RcuZCyXkyBK_xl-VDSlXyDNvw09Pg/export?format=csv",
+                # Try with different gid format
+                f"https://docs.google.com/spreadsheets/d/1421xCS86YH6hx0RcuZCyXkyBK_xl-VDSlXyDNvw09Pg/export?format=csv&id=1421xCS86YH6hx0RcuZCyXkyBK_xl-VDSlXyDNvw09Pg&gid=398422902"
+            ]
+            
+            for url_idx, url in enumerate(urls_to_try):
                 try:
-                    # Fetch CSV data
-                    response = requests.get(self.DISTANCE_MATRIX_URL, timeout=30)
+                    print(f"📋 Trying URL format {url_idx + 1}...")
+                    response = requests.get(url, timeout=30)
+                    
+                    # Check if we got HTML instead of CSV (common when there's an auth issue)
+                    if 'text/html' in response.headers.get('content-type', ''):
+                        print(f"   ⚠️ Got HTML response instead of CSV (likely auth issue)")
+                        continue
+                    
                     response.raise_for_status()
                     
                     # Read into DataFrame
@@ -127,17 +149,18 @@ class DogReassignmentSystem:
                     return True
                     
                 except requests.exceptions.RequestException as e:
-                    if attempt < max_retries - 1:
-                        print(f"⚠️ Attempt {attempt + 1} failed, retrying... ({e})")
-                        time.sleep(2)  # Wait 2 seconds before retry
-                    else:
-                        raise
+                    print(f"   ⚠️ URL format {url_idx + 1} failed: {str(e)[:100]}")
+                    continue
             
-        except Exception as e:
-            print(f"❌ Error loading distance matrix via CSV: {e}")
+            # If all CSV attempts failed, fall back to API
+            print("❌ All CSV export attempts failed")
             print("🔄 Falling back to Google Sheets API...")
             
-            # Fall back to API method
+            return self.load_distance_matrix_via_api()
+            
+        except Exception as e:
+            print(f"❌ Error loading distance matrix: {e}")
+            print("🔄 Attempting API fallback...")
             return self.load_distance_matrix_via_api()
     
     def load_distance_matrix_via_api(self):
@@ -150,8 +173,24 @@ class DogReassignmentSystem:
             # Extract sheet ID from the URL
             sheet_id = "1421xCS86YH6hx0RcuZCyXkyBK_xl-VDSlXyDNvw09Pg"
             
+            print(f"📋 Opening spreadsheet with ID: {sheet_id}")
+            
             # Open the spreadsheet
-            spreadsheet = self.sheets_client.open_by_key(sheet_id)
+            try:
+                spreadsheet = self.sheets_client.open_by_key(sheet_id)
+                print(f"✅ Successfully opened spreadsheet: {spreadsheet.title}")
+            except Exception as e:
+                print(f"❌ Could not open spreadsheet: {e}")
+                return False
+            
+            # List all worksheets for debugging
+            try:
+                worksheets = spreadsheet.worksheets()
+                print(f"📋 Found {len(worksheets)} worksheets:")
+                for ws in worksheets[:5]:  # Show first 5
+                    print(f"   - {ws.title} (ID: {ws.id})")
+            except Exception as e:
+                print(f"⚠️ Could not list worksheets: {e}")
             
             # Try to find the correct worksheet
             worksheet = None
@@ -163,12 +202,12 @@ class DogReassignmentSystem:
                         worksheet = ws
                         print(f"📋 Found worksheet by GID: {ws.title}")
                         break
-            except:
-                pass
+            except Exception as e:
+                print(f"⚠️ Could not search by GID: {e}")
             
             # If not found, try common names
             if not worksheet:
-                sheet_names = ["Distance Matrix", "Matrix", "Sheet1"]
+                sheet_names = ["Distance Matrix", "Matrix", "Sheet1", "Distance", "Distances"]
                 for name in sheet_names:
                     try:
                         worksheet = spreadsheet.worksheet(name)
@@ -179,8 +218,12 @@ class DogReassignmentSystem:
             
             # If still not found, use first sheet
             if not worksheet:
-                worksheet = spreadsheet.get_worksheet(0)
-                print(f"📋 Using first worksheet: {worksheet.title}")
+                try:
+                    worksheet = spreadsheet.get_worksheet(0)
+                    print(f"📋 Using first worksheet: {worksheet.title}")
+                except Exception as e:
+                    print(f"❌ Could not get any worksheet: {e}")
+                    return False
             
             # Get all values
             all_values = worksheet.get_all_values()
@@ -189,37 +232,88 @@ class DogReassignmentSystem:
                 print("❌ No data found in distance matrix")
                 return False
             
+            print(f"📊 Raw data shape: {len(all_values)} rows, {len(all_values[0]) if all_values else 0} columns")
+            
+            # Check if we have enough data
+            if len(all_values) < 2:
+                print("❌ Not enough data rows in distance matrix")
+                return False
+            
             # Convert to DataFrame
-            df = pd.DataFrame(all_values[1:], columns=all_values[0])
-            df = df.set_index(df.columns[0])
+            headers = all_values[0]
+            data_rows = all_values[1:]
             
-            # Convert numeric columns
+            print(f"📊 Headers: {len(headers)} columns")
+            print(f"📊 Data: {len(data_rows)} rows")
+            
+            # Create DataFrame with explicit handling
+            df = pd.DataFrame(data_rows, columns=headers)
+            
+            # Store the index column name before setting it
+            index_col_name = df.columns[0] if len(df.columns) > 0 else None
+            if index_col_name:
+                df = df.set_index(index_col_name)
+            else:
+                print("❌ No columns found in distance matrix")
+                return False
+            
+            # Convert numeric columns - handle each column properly
+            print(f"📊 Converting {len(df.columns)} columns to numeric...")
             for col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
+                try:
+                    # Ensure we're working with a Series
+                    col_data = df[col]
+                    if hasattr(col_data, 'apply'):  # Check if it's a Series
+                        df[col] = pd.to_numeric(col_data, errors='coerce')
+                    else:
+                        print(f"⚠️ Column {col} is not a Series, skipping conversion")
+                except Exception as e:
+                    print(f"⚠️ Could not convert column {col} to numeric: {e}")
             
-            print(f"📊 Distance matrix shape: ({len(df)}, {len(df.columns)})")
+            print(f"📊 Distance matrix shape after conversion: ({len(df)}, {len(df.columns)})")
             
             # Extract dog IDs from columns (skip non-dog columns)
             dog_ids = [col for col in df.columns if 'x' in str(col).lower()]
             print(f"📊 Found {len(dog_ids)} column Dog IDs")
             
+            if not dog_ids:
+                print("❌ No dog IDs found in columns (looking for IDs containing 'x')")
+                print(f"   Column sample: {list(df.columns[:10])}")
+                return False
+            
             # Filter to only dog ID columns and rows
-            dog_df = df.loc[df.index.isin(dog_ids), dog_ids]
-            
-            self.distance_matrix = dog_df
-            print(f"✅ Loaded distance matrix for {len(self.distance_matrix)} dogs via API")
-            
-            # DEBUG: Check some sample values
-            print("\n🔍 DEBUG: Sample distance values (in MILES):")
-            sample_dogs = list(self.distance_matrix.index)[:5]
-            for i, dog1 in enumerate(sample_dogs[:3]):
-                for dog2 in sample_dogs[i+1:i+3]:
-                    if dog2 in self.distance_matrix.columns:
-                        value = self.distance_matrix.loc[dog1, dog2]
-                        if not pd.isna(value):
-                            print(f"   {dog1} → {dog2}: {value:.1f} miles")
-            
-            return True
+            try:
+                # Find matching indices
+                matching_indices = [idx for idx in df.index if idx in dog_ids]
+                print(f"📊 Found {len(matching_indices)} matching row indices")
+                
+                if not matching_indices:
+                    print("⚠️ No matching row indices found, using all dog IDs as indices")
+                    dog_df = df.loc[:, dog_ids]
+                else:
+                    dog_df = df.loc[matching_indices, dog_ids]
+                
+                self.distance_matrix = dog_df
+                print(f"✅ Loaded distance matrix for {len(self.distance_matrix)} dogs via API")
+                
+                # DEBUG: Check some sample values
+                if len(self.distance_matrix) > 0:
+                    print("\n🔍 DEBUG: Sample distance values (in MILES):")
+                    sample_dogs = list(self.distance_matrix.index)[:5]
+                    for i, dog1 in enumerate(sample_dogs[:3]):
+                        for dog2 in sample_dogs[i+1:i+3]:
+                            if dog2 in self.distance_matrix.columns:
+                                value = self.distance_matrix.loc[dog1, dog2]
+                                if not pd.isna(value):
+                                    print(f"   {dog1} → {dog2}: {value:.1f} miles")
+                
+                return True
+                
+            except Exception as e:
+                print(f"❌ Error filtering dog data: {e}")
+                import traceback
+                print(f"🔍 Full error: {traceback.format_exc()}")
+                return False
             
         except Exception as e:
             print(f"❌ Error loading distance matrix via API: {e}")
@@ -2424,189 +2518,3 @@ class ReassignmentEvaluator:
             if count > 0:
                 bar = '█' * int(count / total * 40)
                 print(f"{bucket:12} [{count:2}] {bar} {count/total*100:.1f}%")
-    
-    def _analyze_group_patterns(self):
-        """Analyze group assignment patterns"""
-        print("\n👥 GROUP COMPATIBILITY PATTERNS:")
-        print("-" * 40)
-        
-        print("Group matching analysis:")
-        print("- Exact matches: Dogs placed with drivers in same groups")
-        print("- Adjacent matches: Dogs placed with drivers in neighboring groups")
-        print("- This affects allowed distance thresholds")
-
-
-def evaluate_reassignments(system, reassignments):
-    """Run the evaluation and generate report"""
-    evaluator = ReassignmentEvaluator(system, reassignments)
-    evaluator.generate_detailed_report()
-
-
-def main():
-    """Main function to run the dog reassignment system with capacity cleanup"""
-    print("🚀 Enhanced Dog Reassignment System - DISTANCE-BASED (miles)")
-    print("🎯 NEW: Strategic group-targeted cascading with incremental radius expansion")
-    print("📏 Main: Starts at 1.5 mi, expands to 3.5 mi in 0.5 mi increments")
-    print("🔧 Cleanup: Aggressive proximity-focused capacity violation fixes")
-    print("🔄 Adjacent groups: 75% of current radius (more generous)")
-    print("🎯 STRATEGIC CASCADING: Target blocked groups, not random dogs")
-    print("🚶 Cascading moves up to 3 mi with incremental expansion (1.5→2→2.5→3)")
-    print("🧅 Onion-layer backflow pushes outer assignments out to create inner space")
-    print("📊 Quality: GOOD ≤1.5 mi, BACKUP ≤2.5 mi, EMERGENCY >2.5 mi")
-    print("🎯 TIGHT CONSTRAINTS: Exact matches ≤3.5 mi, Adjacent groups ≤2.6 mi")
-    print("✅ CAPACITY FIXES: Duplicate tracking, safe assignments, verification at each step")
-    print("🗺️ ROUTE COHERENCE: 25% of dogs within 3 miles (relaxed for missing data)")
-    print("⚠️ WARNING: Very tight constraints may result in unassigned dogs!")
-    print("🔄 FALLBACK: If dog not in distance matrix, will use haversine distances")
-    print("=" * 80)
-    
-    # Initialize system
-    system = DogReassignmentSystem()
-    
-    # Setup Google Sheets client
-    if not system.setup_google_sheets_client():
-        print("❌ Failed to setup Google Sheets client for writing")
-        return
-    
-    # Load all data
-    print("\n⬇️ Loading data from Google Sheets...")
-    
-    if not system.load_distance_matrix():
-        print("❌ Failed to load distance matrix")
-        return
-    
-    # Optional: Load haversine matrix as fallback
-    if HAVERSINE_MATRIX_URL:
-        print("\n📊 Loading haversine matrix from URL...")
-        system.load_haversine_matrix(url=HAVERSINE_MATRIX_URL)
-    elif HAVERSINE_SHEET_ID:
-        print("\n📊 Loading haversine matrix via Google Sheets API...")
-        system.load_haversine_matrix(sheet_id=HAVERSINE_SHEET_ID, gid=HAVERSINE_GID)
-    else:
-        print("\nℹ️ No haversine matrix configured - fallback disabled")
-        print("   To enable: Set HAVERSINE_MATRIX_URL or HAVERSINE_SHEET_ID at top of script")
-    
-    if not system.load_dog_assignments():
-        print("❌ Failed to load dog assignments")
-        return
-    
-    if not system.load_driver_capacities():
-        print("❌ Failed to load driver capacities")
-        return
-    
-    # DEBUG: Check initial system state
-    print("\n🔍 INITIAL SYSTEM STATE DEBUG:")
-    
-    # Build initial state for debug
-    initial_state = system.build_initial_assignments_state()
-    
-    for driver in ["Chase", "Hannah", "Blanch", "Ali", "Alyson"]:
-        if driver in system.driver_capacities:
-            system.debug_capacity_calculation(driver, initial_state, "(initial state)")
-    
-    # Run the locality-first assignment with strategic cascading
-    print("\n🔄 Processing callout assignments...")
-    
-    reassignments = system.reassign_dogs_multi_strategy_optimization()
-    
-    # Ensure reassignments is always a list
-    if reassignments is None:
-        reassignments = []
-    
-    # Check for unassigned dogs
-    unassigned_count = len([a for a in reassignments if a.get('driver') == 'UNASSIGNED'])
-    if unassigned_count > 0:
-        print(f"\n⚠️ WARNING: {unassigned_count} dogs could not be assigned within 3.5 mile limit!")
-        print("Consider relaxing constraints or adding more drivers in affected areas.")
-    
-    # Write results
-    if reassignments:
-        # Run evaluation BEFORE writing to sheets to understand decisions
-        print("\n" + "="*80)
-        print("🔍 EVALUATING REASSIGNMENT DECISIONS")
-        print("="*80)
-        evaluate_reassignments(system, reassignments)
-        
-        # DEBUG: Check final system state
-        print("\n🔍 FINAL SYSTEM STATE DEBUG:")
-        
-        # Build final state for debug  
-        final_state = system.build_initial_assignments_state()
-        
-        for driver in ["Chase", "Hannah", "Blanch", "Ali", "Alyson"]:
-            if driver in system.driver_capacities:
-                system.debug_capacity_calculation(driver, final_state, "(final state)")
-        
-        write_success = system.write_results_to_sheets(reassignments)
-        if write_success:
-            print(f"\n🎉 SUCCESS! Processed {len(reassignments)} callout assignments")
-            print(f"✅ Used locality-first + strategic cascading with 3.5 mile limit")
-            print(f"✅ WITH CAPACITY FIXES: All capacity constraints respected")
-            
-            # ========== CAPACITY CLEANUP PHASE ==========
-            print("\n" + "="*80)
-            print("🔧 AGGRESSIVE CAPACITY CLEANUP - Fixing violations with extreme proximity")
-            print("📏 Thresholds: ≤2.5 mi direct, ≤1.5 mi adjacent, ≤3 mi cascading")
-            print("🎯 Goal: 100% close placements, zero tolerance for distant fixes")
-            print("="*80)
-            
-            try:
-                # Import and run cleanup
-                from capacity_cleanup import CapacityCleanup
-                
-                cleanup = CapacityCleanup()
-                # Copy data instead of reloading
-                cleanup.distance_matrix = system.distance_matrix
-                cleanup.haversine_matrix = system.haversine_matrix  # Also copy haversine if available
-                cleanup.dog_assignments = system.dog_assignments  # Updated assignments
-                cleanup.driver_capacities = system.driver_capacities
-                cleanup.sheets_client = system.sheets_client
-                
-                # Run aggressive cleanup
-                moves = cleanup.fix_capacity_violations()
-                
-                if moves:
-                    cleanup_success = cleanup.write_moves_to_sheets(moves)
-                    if cleanup_success:
-                        print(f"\n🎉 COMPLETE SUCCESS! Main + cleanup: extreme proximity achieved")
-                    else:
-                        print(f"\n⚠️ Main completed, cleanup had sheet writing issues")
-                else:
-                    print(f"\n✅ Perfect! No capacity violations to clean up")
-                    
-            except Exception as e:
-                print(f"\n⚠️ Cleanup phase error (main script succeeded): {e}")
-                import traceback
-                print(f"🔍 Cleanup error details: {traceback.format_exc()}")
-            
-        else:
-            print(f"\n❌ Failed to write {len(reassignments)} results to Google Sheets")
-            # Don't run cleanup if main write failed
-    else:
-        print(f"\n✅ No callout assignments needed - all drivers available or no valid assignments found")
-        
-        # Run cleanup even if no callouts (might still have capacity violations from existing assignments)
-        print("\n🔍 Checking for existing capacity violations...")
-        try:
-            from capacity_cleanup import CapacityCleanup
-            
-            cleanup = CapacityCleanup()
-            cleanup.distance_matrix = system.distance_matrix
-            cleanup.haversine_matrix = system.haversine_matrix if hasattr(system, 'haversine_matrix') else None
-            cleanup.dog_assignments = system.dog_assignments
-            cleanup.driver_capacities = system.driver_capacities
-            cleanup.sheets_client = system.sheets_client
-            
-            moves = cleanup.fix_capacity_violations()
-            
-            if moves:
-                cleanup_success = cleanup.write_moves_to_sheets(moves)
-                if cleanup_success:
-                    print(f"\n✅ Fixed existing capacity violations: {len(moves)} moves")
-                    
-        except Exception as e:
-            print(f"\n⚠️ Capacity check error: {e}")
-
-
-if __name__ == "__main__":
-    main()
