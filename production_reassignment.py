@@ -190,13 +190,27 @@ class SmartDogReassignment:
         return sorted(list(set(int(d) for d in re.findall(r'[123]', text))))
     
     def _get_distance(self, dog1_id, dog2_id):
-        """Get distance between two dogs"""
+        """Get distance between two dogs with proper error handling"""
+        # Don't calculate distance to self
+        if dog1_id == dog2_id:
+            return 0.0
+            
         try:
-            if dog1_id in self.distance_matrix.index and dog2_id in self.distance_matrix.columns:
-                dist = self.distance_matrix.loc[dog1_id, dog2_id]
-                return float(dist) if not pd.isna(dist) else float('inf')
-        except:
-            pass
+            if self.distance_matrix is not None:
+                # Check both directions (matrix might not be symmetric)
+                if dog1_id in self.distance_matrix.index and dog2_id in self.distance_matrix.columns:
+                    dist = self.distance_matrix.loc[dog1_id, dog2_id]
+                    if not pd.isna(dist) and dist >= 0:  # Valid distance
+                        return float(dist)
+                
+                # Try reverse direction
+                if dog2_id in self.distance_matrix.index and dog1_id in self.distance_matrix.columns:
+                    dist = self.distance_matrix.loc[dog2_id, dog1_id]
+                    if not pd.isna(dist) and dist >= 0:
+                        return float(dist)
+        except Exception as e:
+            print(f"      ⚠️ Error getting distance {dog1_id} → {dog2_id}: {e}")
+        
         return float('inf')
     
     def _groups_compatible(self, dog_groups, driver_groups):
@@ -341,26 +355,45 @@ class SmartDogReassignment:
         """Execute a smart cascading move to free space"""
         print(f"\n   🔄 Cascading needed: {blocked_driver} is full")
         
+        # Prevent infinite cascading
+        if hasattr(self, '_cascade_depth'):
+            self._cascade_depth += 1
+            if self._cascade_depth > 3:
+                print(f"   ⚠️ Max cascade depth reached - stopping")
+                return False
+        else:
+            self._cascade_depth = 1
+        
         # Find the outlier dog to move
         outlier = self._find_outlier_dog(blocked_driver, callout_dog['groups'])
         if not outlier:
             print(f"   ❌ No suitable dog to move from {blocked_driver}")
+            self._cascade_depth = 0
             return False
         
-        # Find best new driver for the outlier
-        new_home = self._find_best_driver_for_dog(outlier, exclude_drivers=[blocked_driver])
+        # Find best new driver for the outlier (exclude current driver and called-out drivers)
+        exclude_list = [blocked_driver] + list(self.called_out_drivers)
+        new_home = self._find_best_driver_for_dog(outlier, exclude_drivers=exclude_list)
         if not new_home:
             print(f"   ❌ No driver can accept {outlier['dog_name']}")
+            self._cascade_depth = 0
             return False
         
         # Execute the move
         print(f"   ✅ Moving {outlier['dog_name']}: {blocked_driver} → {new_home['driver']} ({new_home['distance']:.1f} mi)")
         
-        # Update state
+        # Update state - find the dog and update its driver
+        dog_found = False
         for dog in self.current_state:
             if dog['dog_id'] == outlier['dog_id']:
                 dog['driver'] = new_home['driver']
+                dog_found = True
                 break
+        
+        if not dog_found:
+            print(f"   ⚠️ Warning: Could not find {outlier['dog_name']} in state")
+            self._cascade_depth = 0
+            return False
         
         # Record the move
         self.cascading_moves.append({
@@ -372,6 +405,7 @@ class SmartDogReassignment:
             'reason': f"Free space for {callout_dog['dog_name']}"
         })
         
+        self._cascade_depth = 0
         return True
     
     def run_assignments(self):
