@@ -2,6 +2,18 @@
 """
 Smart radius-based assignment with intelligent cascading
 Always moves the OUTLIER dog to maintain route coherence
+
+BUG FIXES AND SAFETY FEATURES:
+- Cascade depth limit (max 3) to prevent infinite loops
+- Duplicate detection in write_results
+- Bidirectional distance checks (matrix might not be symmetric)
+- Safe group extraction with error handling
+- Validation of required data before running
+- Chunked updates to avoid Google Sheets API limits
+- Exclude called-out drivers from all operations
+- Handle missing assignment strings gracefully
+- Check for self-distances (dog to itself = 0)
+- Validate drivers have dogs before processing
 """
 
 import pandas as pd
@@ -102,28 +114,24 @@ class SmartDogReassignment:
                     except:
                         num_dogs = 1
                 
-                    # If has assignment, add to current state
-                    if combined and ':' in combined:
-                        parts = combined.split(':', 1)
-                        driver = parts[0].strip()
-                        groups = self._extract_groups(parts[1])
-                        
-                        if groups and driver:  # Valid assignment
-                            self.current_state.append({
-                                'dog_id': dog_id,
-                                'dog_name': dog_name,
-                                'driver': driver,
-                                'groups': groups,
-                                'num_dogs': num_dogs,
-                                'is_callout': False
-                            })
+                    # Check for callout FIRST (prioritize callouts over assignments)
+                    # A callout is when Combined is empty/nan AND Callout has "Driver: groups"
+                    combined_is_empty = (
+                        pd.isna(row.iloc[7]) or 
+                        str(row.iloc[7]).strip() in ['', 'nan', 'None']
+                    )
                     
-                    # If callout, mark for reassignment
-                    elif callout and ':' in callout:
+                    callout_has_data = (
+                        not pd.isna(row.iloc[10]) and 
+                        ':' in str(row.iloc[10])
+                    )
+                    
+                    if combined_is_empty and callout_has_data:
+                        # This is a CALLOUT - needs reassignment
                         # Skip non-dog entries
                         if any(skip in dog_name.lower() for skip in ['parking', 'field', 'admin', 'office']):
                             continue
-                            
+                        
                         parts = callout.split(':', 1)
                         original_driver = parts[0].strip()
                         groups = self._extract_groups(parts[1])
@@ -140,6 +148,22 @@ class SmartDogReassignment:
                                 'assignment_string': parts[1].strip()
                             })
                             self.called_out_drivers.add(original_driver)
+                            
+                    elif combined and ':' in combined:
+                        # Regular assignment (not a callout)
+                        parts = combined.split(':', 1)
+                        driver = parts[0].strip()
+                        groups = self._extract_groups(parts[1])
+                        
+                        if groups and driver:  # Valid assignment
+                            self.current_state.append({
+                                'dog_id': dog_id,
+                                'dog_name': dog_name,
+                                'driver': driver,
+                                'groups': groups,
+                                'num_dogs': num_dogs,
+                                'is_callout': False
+                            })
                 
                 except Exception as e:
                     # Skip problematic rows
@@ -186,8 +210,19 @@ class SmartDogReassignment:
             return False
     
     def _extract_groups(self, text):
-        """Extract group numbers from assignment string"""
-        return sorted(list(set(int(d) for d in re.findall(r'[123]', text))))
+        """Extract group numbers from assignment string safely"""
+        if not text:
+            return []
+        
+        try:
+            # Convert to string if not already
+            text = str(text)
+            # Find all 1, 2, or 3 digits
+            groups = sorted(list(set(int(d) for d in re.findall(r'[123]', text))))
+            return groups
+        except Exception as e:
+            print(f"      ⚠️ Error extracting groups from '{text}': {e}")
+            return []
     
     def _get_distance(self, dog1_id, dog2_id):
         """Get distance between two dogs with proper error handling"""
@@ -302,26 +337,37 @@ class SmartDogReassignment:
         return outlier_dog
     
     def _find_best_driver_for_dog(self, dog, exclude_drivers=None):
-        """Find the closest available driver for a dog"""
+        """Find the closest available driver for a dog with validation"""
         exclude = exclude_drivers or []
         best_option = None
         best_score = float('inf')
         
         # Get all unique drivers
-        drivers = set(d['driver'] for d in self.current_state if d['driver'])
+        drivers = set()
+        for d in self.current_state:
+            if d.get('driver') and d['driver'] not in exclude and d['driver'] not in self.called_out_drivers:
+                drivers.add(d['driver'])
+        
+        if not drivers:
+            print(f"      ⚠️ No available drivers found")
+            return None
         
         for driver in drivers:
-            if driver in exclude or driver in self.called_out_drivers:
+            # Get driver's groups from ALL their dogs
+            driver_groups = []
+            driver_dogs = []
+            for d in self.current_state:
+                if d.get('driver') == driver:
+                    driver_groups.extend(d.get('groups', []))
+                    driver_dogs.append(d)
+            
+            if not driver_dogs:  # Driver has no dogs?
                 continue
             
-            # Get driver's groups
-            driver_groups = set()
-            for d in self.current_state:
-                if d['driver'] == driver:
-                    driver_groups.update(d['groups'])
+            driver_groups = list(set(driver_groups))  # Unique groups
             
             # Check group compatibility
-            compatible, penalty = self._groups_compatible(dog['groups'], list(driver_groups))
+            compatible, penalty = self._groups_compatible(dog.get('groups', []), driver_groups)
             if not compatible:
                 continue
             
@@ -331,8 +377,8 @@ class SmartDogReassignment:
             
             # Find closest dog in this driver's route
             min_distance = float('inf')
-            for other_dog in self.current_state:
-                if other_dog['driver'] == driver:
+            for other_dog in driver_dogs:
+                if other_dog['dog_id'] != dog['dog_id']:  # Don't compare to self
                     dist = self._get_distance(dog['dog_id'], other_dog['dog_id'])
                     if dist < min_distance:
                         min_distance = dist
@@ -340,7 +386,7 @@ class SmartDogReassignment:
             # Score combines distance and group penalty
             score = min_distance * penalty
             
-            if score < best_score:
+            if score < best_score and min_distance < self.MAX_SEARCH_RADIUS:
                 best_score = score
                 best_option = {
                     'driver': driver,
@@ -413,6 +459,15 @@ class SmartDogReassignment:
         print("\n🚀 Running Smart Assignment Algorithm")
         print("=" * 60)
         
+        # Validate we have required data
+        if self.distance_matrix is None:
+            print("❌ No distance matrix loaded - cannot run assignments")
+            return []
+        
+        if not self.driver_capacities:
+            print("❌ No driver capacities loaded - cannot run assignments")
+            return []
+        
         # Configuration
         CAPACITY_BYPASS_THRESHOLD = 0.3  # If driver with capacity is within 0.3 mi of closest, use them instead
         
@@ -428,6 +483,14 @@ class SmartDogReassignment:
         # Process each callout dog
         for i, callout_dog in enumerate(callouts, 1):
             print(f"\n{i}. {callout_dog['dog_name']} (needs groups {callout_dog['groups']}):")
+            
+            # Validate callout has required fields
+            if not callout_dog.get('assignment_string'):
+                print(f"   ⚠️ Missing assignment string for {callout_dog['dog_name']}")
+                callout_dog['assignment_string'] = ','.join(str(g) for g in callout_dog.get('groups', []))
+            
+            if not callout_dog.get('original'):
+                callout_dog['original'] = f"Callout:{callout_dog.get('assignment_string', '')}"
             
             # Find ALL potential drivers, sorted by distance
             all_options = []
@@ -609,9 +672,11 @@ class SmartDogReassignment:
             return False
     
     def write_results(self):
-        """Write results back to Google Sheets"""
-        if not hasattr(self, 'sheets_client'):
+        """Write results back to Google Sheets with error handling"""
+        if not hasattr(self, 'sheets_client') or self.sheets_client is None:
             if not self.setup_sheets_client():
+                print("\n⚠️ No credentials for writing results")
+                print("Set GOOGLE_SERVICE_ACCOUNT_JSON environment variable to enable writing")
                 return False
         
         try:
@@ -621,50 +686,84 @@ class SmartDogReassignment:
             ws = sheet.get_worksheet(0)
             data = ws.get_all_values()
             
+            if not data:
+                print("❌ No data in sheet")
+                return False
+            
             updates = []
+            dogs_updated = set()  # Track to avoid duplicate updates
             
             # Update main assignments
             for result in self.assignments_made:
+                if result['dog_id'] in dogs_updated:
+                    continue  # Skip if already processed
+                    
                 for i, row in enumerate(data[1:], 1):
                     if len(row) > 9 and row[9] == result['dog_id']:
-                        # Column H (combined)
+                        # Column H (combined) - index 7
+                        cell_h = f'H{i+1}'
+                        # Column K (notes) - index 10
+                        cell_k = f'K{i+1}'
+                        
                         updates.append({
-                            'range': f'H{i+1}',
+                            'range': cell_h,
                             'values': [[result['new_assignment']]]
                         })
-                        # Column K (notes)
                         updates.append({
-                            'range': f'K{i+1}',
-                            'values': [[f"Reassigned: {result['original']}"]]
+                            'range': cell_k,
+                            'values': [[f"Reassigned from: {result.get('original', 'callout')}"]]
                         })
+                        dogs_updated.add(result['dog_id'])
                         break
             
             # Update cascading moves
             for move in self.cascading_moves:
+                if move['dog_id'] in dogs_updated:
+                    continue  # Skip if already processed
+                    
                 for i, row in enumerate(data[1:], 1):
                     if len(row) > 9 and row[9] == move['dog_id']:
-                        # Update the driver in combined column
+                        # Get current assignment to preserve the group info
                         if len(row) > 7 and row[7] and ':' in row[7]:
                             old_combined = row[7]
                             assignment_part = old_combined.split(':', 1)[1]
                             new_combined = f"{move['to_driver']}:{assignment_part}"
-                            updates.append({
-                                'range': f'H{i+1}',
-                                'values': [[new_combined]]
-                            })
-                            updates.append({
-                                'range': f'K{i+1}',
-                                'values': [[f"Cascaded: {move['from_driver']} → {move['to_driver']}"]]
-                            })
+                        else:
+                            # Fallback if no current assignment
+                            new_combined = f"{move['to_driver']}:1,2,3"
+                        
+                        cell_h = f'H{i+1}'
+                        cell_k = f'K{i+1}'
+                        
+                        updates.append({
+                            'range': cell_h,
+                            'values': [[new_combined]]
+                        })
+                        updates.append({
+                            'range': cell_k,
+                            'values': [[f"Cascaded: {move['from_driver']} → {move['to_driver']} ({move.get('reason', '')[:50]})"]]
+                        })
+                        dogs_updated.add(move['dog_id'])
                         break
             
             if updates:
-                ws.batch_update(updates)
-                print(f"✅ Updated {len(updates)//2} assignments")
+                # Batch update in chunks to avoid API limits
+                chunk_size = 100  # Google Sheets API can handle up to 100 updates at once
+                for i in range(0, len(updates), chunk_size):
+                    chunk = updates[i:i+chunk_size]
+                    ws.batch_update(chunk)
+                    print(f"   📤 Written {min(i+chunk_size, len(updates))}/{len(updates)} updates...")
+                
+                print(f"✅ Successfully updated {len(dogs_updated)} dogs")
                 return True
+            else:
+                print("⚠️ No updates to write")
+                return False
                 
         except Exception as e:
             print(f"❌ Write error: {e}")
+            import traceback
+            print(f"Details: {traceback.format_exc()}")
             return False
 
 
