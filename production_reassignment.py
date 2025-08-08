@@ -3,7 +3,14 @@
 Smart radius-based assignment with intelligent cascading
 Always moves the OUTLIER dog to maintain route coherence
 
+KEY FEATURES:
+- Skips field locations (num_dogs = 0) - they don't count against capacity
+- Only moves real dogs during cascading (not fields)
+- 0.3 mile bypass to avoid unnecessary cascading
+- Increased search radius to 5 miles for better coverage
+
 BUG FIXES AND SAFETY FEATURES:
+- Field locations (0 dogs) are completely ignored
 - Cascade depth limit (max 3) to prevent infinite loops
 - Duplicate detection in write_results
 - Bidirectional distance checks (matrix might not be symmetric)
@@ -42,7 +49,7 @@ class SmartDogReassignment:
         self.MAP_SHEET_ID = "1mg8d5CLxSR54KhNUL8SpL5jzrGN-bghTsC9vxSK8lR0"
         
         # Configuration
-        self.MAX_SEARCH_RADIUS = 3.5  # miles
+        self.MAX_SEARCH_RADIUS = 5.0  # miles (increased from 3.5 for better coverage)
         self.ADJACENT_GROUP_PENALTY = 1.5  # Adjacent groups get 1.5x distance penalty
         
         # Data storage
@@ -107,12 +114,20 @@ class SmartDogReassignment:
                     combined = str(row.iloc[7]) if not pd.isna(row.iloc[7]) else ""
                     callout = str(row.iloc[10]) if not pd.isna(row.iloc[10]) else ""
                     
-                    # Safe conversion to int
+                    # Safe conversion to int for num_dogs
                     try:
                         num_dogs = int(float(str(row.iloc[5]))) if not pd.isna(row.iloc[5]) else 1
-                        num_dogs = max(1, num_dogs)  # Ensure at least 1
                     except:
                         num_dogs = 1
+                    
+                    # Note: We KEEP field locations (0 dogs) as they help with proximity
+                    # But they won't count against capacity or be moveable
+                    if num_dogs < 0:
+                        num_dogs = 0  # Ensure non-negative
+                    
+                    # Skip obvious non-dog/non-field entries
+                    if any(skip in dog_name.lower() for skip in ['parking', 'admin', 'office']):
+                        continue
                 
                     # Check for callout FIRST (prioritize callouts over assignments)
                     # A callout is when Combined is empty/nan AND Callout has "Driver: groups"
@@ -270,10 +285,10 @@ class SmartDogReassignment:
         return False, float('inf')
     
     def _get_driver_load(self, driver):
-        """Calculate current load for a driver"""
+        """Calculate current load for a driver (excluding field locations)"""
         load = {'group1': 0, 'group2': 0, 'group3': 0}
         for dog in self.current_state:
-            if dog['driver'] == driver:
+            if dog['driver'] == driver and dog.get('num_dogs', 1) > 0:  # Only count real dogs
                 for group in dog['groups']:
                     load[f'group{group}'] += dog['num_dogs']
         return load
@@ -292,9 +307,15 @@ class SmartDogReassignment:
     
     def _find_outlier_dog(self, driver, groups_needed):
         """Find the outlier dog in driver's route that should be moved"""
-        driver_dogs = [d for d in self.current_state if d['driver'] == driver and not d.get('is_callout', False)]
+        # Only consider REAL dogs (not fields, not callouts, and num_dogs > 0)
+        driver_dogs = [
+            d for d in self.current_state 
+            if d['driver'] == driver 
+            and not d.get('is_callout', False)
+            and d.get('num_dogs', 1) > 0  # Skip field locations
+        ]
         
-        # Need at least 2 dogs to find an outlier
+        # Need at least 2 real dogs to find an outlier
         if len(driver_dogs) <= 1:
             return None
         
@@ -322,9 +343,9 @@ class SmartDogReassignment:
                 outlier_scores.append((dog, avg_distance))
         
         if not outlier_scores:
-            # Fallback: just pick any dog that has needed groups
+            # Fallback: just pick any dog that has needed groups (but not a field!)
             for dog in driver_dogs:
-                if any(g in groups_needed for g in dog['groups']):
+                if any(g in groups_needed for g in dog['groups']) and dog.get('num_dogs', 1) > 0:
                     print(f"   ⚠️ No clear outlier, picking {dog['dog_name']}")
                     return dog
             return None
@@ -375,13 +396,20 @@ class SmartDogReassignment:
             if not self._can_driver_accept(driver, dog):
                 continue
             
-            # Find closest dog in this driver's route
+            # Find closest assignment in this driver's route (dogs OR fields with 1-mile limit)
             min_distance = float('inf')
-            for other_dog in driver_dogs:
-                if other_dog['dog_id'] != dog['dog_id']:  # Don't compare to self
-                    dist = self._get_distance(dog['dog_id'], other_dog['dog_id'])
-                    if dist < min_distance:
-                        min_distance = dist
+            for other_assignment in driver_dogs:
+                if other_assignment['dog_id'] != dog['dog_id']:
+                    dist = self._get_distance(dog['dog_id'], other_assignment['dog_id'])
+                    
+                    # If it's a field, only consider if within 1 mile
+                    if other_assignment.get('num_dogs', 1) == 0:  # Field location
+                        if dist <= 1.0:  # 1-mile limit for fields
+                            if dist < min_distance:
+                                min_distance = dist
+                    else:  # Regular dog
+                        if dist < min_distance:
+                            min_distance = dist
             
             # Score combines distance and group penalty
             score = min_distance * penalty
@@ -456,20 +484,13 @@ class SmartDogReassignment:
     
     def run_assignments(self):
         """Main assignment algorithm with smart cascading"""
-        print("\n🚀 Running Smart Assignment Algorithm")
-        print("=" * 60)
-        
-        # Validate we have required data
-        if self.distance_matrix is None:
-            print("❌ No distance matrix loaded - cannot run assignments")
-            return []
-        
-        if not self.driver_capacities:
-            print("❌ No driver capacities loaded - cannot run assignments")
-            return []
-        
         # Configuration
         CAPACITY_BYPASS_THRESHOLD = 0.3  # If driver with capacity is within 0.3 mi of closest, use them instead
+        
+        print("\n🚀 Running Smart Assignment Algorithm")
+        print(f"   Search radius: up to {self.MAX_SEARCH_RADIUS} miles")
+        print(f"   Cascade bypass threshold: {CAPACITY_BYPASS_THRESHOLD} miles")
+        print("=" * 60)
         
         # Get callout dogs
         callouts = [d for d in self.current_state if d['is_callout']]
@@ -511,13 +532,24 @@ class SmartDogReassignment:
                 if not compatible:
                     continue
                 
-                # Find closest distance
+                # Find closest distance (to dogs OR fields, but fields have 1-mile limit)
                 min_distance = float('inf')
-                for other_dog in self.current_state:
-                    if other_dog['driver'] == driver:
-                        dist = self._get_distance(callout_dog['dog_id'], other_dog['dog_id'])
-                        if dist < min_distance:
-                            min_distance = dist
+                closest_is_field = False
+                
+                for other_assignment in self.current_state:
+                    if other_assignment['driver'] == driver:
+                        dist = self._get_distance(callout_dog['dog_id'], other_assignment['dog_id'])
+                        
+                        # If it's a field location, only consider if within 1 mile
+                        if other_assignment.get('num_dogs', 1) == 0:  # Field location
+                            if dist <= 1.0:  # 1-mile limit for fields
+                                if dist < min_distance:
+                                    min_distance = dist
+                                    closest_is_field = True
+                        else:  # Regular dog
+                            if dist < min_distance:
+                                min_distance = dist
+                                closest_is_field = False
                 
                 if min_distance < self.MAX_SEARCH_RADIUS:
                     has_capacity = self._can_driver_accept(driver, callout_dog)
@@ -526,7 +558,8 @@ class SmartDogReassignment:
                         'distance': min_distance,
                         'score': min_distance * penalty,
                         'has_capacity': has_capacity,
-                        'is_adjacent': penalty > 1
+                        'is_adjacent': penalty > 1,
+                        'via_field': closest_is_field
                     })
             
             # Sort by score (distance * penalty)
@@ -564,8 +597,9 @@ class SmartDogReassignment:
                     
                     if distance_diff <= CAPACITY_BYPASS_THRESHOLD:
                         # Use the one with capacity to avoid cascading
+                        via_note = " (via field)" if closest_with_capacity.get('via_field') else ""
                         print(f"   📊 Closest: {closest_option['driver']} ({closest_option['distance']:.1f} mi) - FULL")
-                        print(f"   ✨ Using {closest_with_capacity['driver']} ({closest_with_capacity['distance']:.1f} mi) - has capacity")
+                        print(f"   ✨ Using {closest_with_capacity['driver']} ({closest_with_capacity['distance']:.1f} mi{via_note}) - has capacity")
                         print(f"   💡 Avoiding cascade (only {distance_diff:.1f} mi farther)")
                         
                         # Assign to driver with capacity
