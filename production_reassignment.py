@@ -1,9 +1,10 @@
 # production_reassignment_smart.py
 """
-Smart radius-based assignment with intelligent cascading
+Smart radius-based assignment with intelligent cascading and load balancing
 Always moves the OUTLIER dog to maintain route coherence
 
 KEY FEATURES:
+- Prioritizes lightly-loaded drivers within 1.5 miles (< 4 dogs per group)
 - Skips field locations (num_dogs = 0) - they don't count against capacity
 - Only moves real dogs during cascading (not fields)
 - 0.3 mile bypass to avoid unnecessary cascading
@@ -51,6 +52,8 @@ class SmartDogReassignment:
         # Configuration
         self.MAX_SEARCH_RADIUS = 5.0  # miles (increased from 3.5 for better coverage)
         self.ADJACENT_GROUP_PENALTY = 1.5  # Adjacent groups get 1.5x distance penalty
+        self.LIGHT_LOAD_RADIUS = 1.5  # Look for lightly-loaded drivers within 1.5 miles
+        self.LIGHT_LOAD_THRESHOLD = 4  # Consider drivers with < 4 dogs per group as "lightly loaded"
         
         # Data storage
         self.distance_matrix = None
@@ -305,6 +308,17 @@ class SmartDogReassignment:
                 return False
         return True
     
+    def _is_driver_lightly_loaded(self, driver, groups_needed):
+        """Check if driver has light load (< 4 dogs) in any of the needed groups"""
+        load = self._get_driver_load(driver)
+        
+        for group in groups_needed:
+            current_load = load.get(f'group{group}', 0)
+            if current_load < self.LIGHT_LOAD_THRESHOLD:
+                return True, current_load
+        
+        return False, min(load.get(f'group{g}', 0) for g in groups_needed)
+    
     def _find_outlier_dog(self, driver, groups_needed):
         """Find the outlier dog in driver's route that should be moved"""
         # Only consider REAL dogs (not fields, not callouts, and num_dogs > 0)
@@ -483,12 +497,13 @@ class SmartDogReassignment:
         return True
     
     def run_assignments(self):
-        """Main assignment algorithm with smart cascading"""
+        """Main assignment algorithm with load balancing and smart cascading"""
         # Configuration
         CAPACITY_BYPASS_THRESHOLD = 0.3  # If driver with capacity is within 0.3 mi of closest, use them instead
         
-        print("\n🚀 Running Smart Assignment Algorithm")
+        print("\n🚀 Running Smart Assignment Algorithm with Load Balancing")
         print(f"   Search radius: up to {self.MAX_SEARCH_RADIUS} miles")
+        print(f"   Light load preference: {self.LIGHT_LOAD_RADIUS} mile radius, < {self.LIGHT_LOAD_THRESHOLD} dogs/group")
         print(f"   Cascade bypass threshold: {CAPACITY_BYPASS_THRESHOLD} miles")
         print("=" * 60)
         
@@ -499,7 +514,6 @@ class SmartDogReassignment:
             return []
         
         print(f"📋 Processing {len(callouts)} callout dogs...")
-        print(f"📏 Cascading bypass: Will use driver with capacity if within {CAPACITY_BYPASS_THRESHOLD} mi of closest")
         
         # Process each callout dog
         for i, callout_dog in enumerate(callouts, 1):
@@ -513,9 +527,82 @@ class SmartDogReassignment:
             if not callout_dog.get('original'):
                 callout_dog['original'] = f"Callout:{callout_dog.get('assignment_string', '')}"
             
-            # Find ALL potential drivers, sorted by distance
-            all_options = []
+            # STEP 1: Look for lightly-loaded drivers within 1.5 miles
+            nearby_light_drivers = []
             drivers = set(d['driver'] for d in self.current_state if d['driver'])
+            
+            for driver in drivers:
+                if driver in self.called_out_drivers:
+                    continue
+                
+                # Get driver's groups
+                driver_groups = set()
+                for d in self.current_state:
+                    if d['driver'] == driver:
+                        driver_groups.update(d['groups'])
+                
+                # Check compatibility
+                compatible, penalty = self._groups_compatible(callout_dog['groups'], list(driver_groups))
+                if not compatible:
+                    continue
+                
+                # Check if driver is lightly loaded in needed groups
+                is_light, min_load = self._is_driver_lightly_loaded(driver, callout_dog['groups'])
+                if not is_light:
+                    continue
+                
+                # Check capacity
+                if not self._can_driver_accept(driver, callout_dog):
+                    continue
+                
+                # Find closest distance
+                min_distance = float('inf')
+                for other_assignment in self.current_state:
+                    if other_assignment['driver'] == driver:
+                        dist = self._get_distance(callout_dog['dog_id'], other_assignment['dog_id'])
+                        
+                        # If it's a field location, only consider if within 1 mile
+                        if other_assignment.get('num_dogs', 1) == 0:  # Field location
+                            if dist <= 1.0:
+                                if dist < min_distance:
+                                    min_distance = dist
+                        else:  # Regular dog
+                            if dist < min_distance:
+                                min_distance = dist
+                
+                # Only consider if within light load radius
+                if min_distance <= self.LIGHT_LOAD_RADIUS:
+                    nearby_light_drivers.append({
+                        'driver': driver,
+                        'distance': min_distance,
+                        'min_load': min_load,
+                        'score': min_distance * penalty,
+                        'is_adjacent': penalty > 1
+                    })
+            
+                            # If we found lightly-loaded drivers within 1.5 miles, use the best one
+            if nearby_light_drivers:
+                # Sort by distance (closest first)
+                nearby_light_drivers.sort(key=lambda x: x['distance'])
+                best_light = nearby_light_drivers[0]
+                
+                print(f"   ⭐ Found lightly-loaded driver within {self.LIGHT_LOAD_RADIUS} mi!")
+                print(f"   ✅ Assigning to {best_light['driver']} ({best_light['distance']:.2f} mi, load: {best_light['min_load']} dogs)")
+                
+                callout_dog['driver'] = best_light['driver']
+                self.assignments_made.append({
+                    'dog_id': callout_dog['dog_id'],
+                    'dog_name': callout_dog['dog_name'],
+                    'driver': best_light['driver'],
+                    'distance': best_light['distance'],
+                    'quality': 'LIGHT_LOAD',
+                    'new_assignment': f"{best_light['driver']}:{callout_dog['assignment_string']}",
+                    'original': callout_dog['original']
+                })
+                continue
+            
+            # STEP 2: Fall back to finding ALL potential drivers, sorted by distance
+            all_options = []
             
             for driver in drivers:
                 if driver in self.called_out_drivers:
@@ -678,7 +765,10 @@ class SmartDogReassignment:
             quality_counts[q] = quality_counts.get(q, 0) + 1
         
         for quality, count in quality_counts.items():
-            print(f"   {quality}: {count}")
+            if quality == 'LIGHT_LOAD':
+                print(f"   {quality}: {count} ⭐ (preferred - lightly loaded drivers)")
+            else:
+                print(f"   {quality}: {count}")
         
         if self.cascading_moves:
             print(f"\n🔄 Cascading moves made:")
@@ -743,9 +833,15 @@ class SmartDogReassignment:
                             'range': cell_h,
                             'values': [[result['new_assignment']]]
                         })
+                        
+                        # Add quality indicator to notes
+                        quality_note = ""
+                        if result['quality'] == 'LIGHT_LOAD':
+                            quality_note = " [LIGHT LOAD ⭐]"
+                        
                         updates.append({
                             'range': cell_k,
-                            'values': [[f"Reassigned from: {result.get('original', 'callout')}"]]
+                            'values': [[f"Reassigned from: {result.get('original', 'callout')}{quality_note}"]]
                         })
                         dogs_updated.add(result['dog_id'])
                         break
@@ -859,8 +955,8 @@ def test_system():
 
 def main():
     """Main entry point with error handling"""
-    print("🐕 Smart Dog Reassignment System")
-    print("🎯 Strategy: Assign to closest driver, move outliers when needed")
+    print("🐕 Smart Dog Reassignment System with Load Balancing")
+    print("🎯 Strategy: Prioritize lightly-loaded drivers within 1.5 miles, then closest")
     print("=" * 60)
     
     # Run tests first in debug mode
