@@ -5,6 +5,8 @@ Always moves the OUTLIER dog to maintain route coherence
 
 KEY FEATURES:
 - Prioritizes lightly-loaded drivers within 1.5 miles (< 4 dogs per group)
+- Includes ALL drivers from capacity list, even those with no current dogs
+- Empty drivers (0 dogs) get highest priority when they have capacity
 - Skips field locations (num_dogs = 0) - they don't count against capacity
 - Only moves real dogs during cascading (not fields)
 - 0.3 mile bypass to avoid unnecessary cascading
@@ -377,27 +379,28 @@ class SmartDogReassignment:
         best_option = None
         best_score = float('inf')
         
-        # Get all unique drivers
-        drivers = set()
-        for d in self.current_state:
-            if d.get('driver') and d['driver'] not in exclude and d['driver'] not in self.called_out_drivers:
-                drivers.add(d['driver'])
+        # Use ALL drivers from capacity list
+        all_drivers = set(self.driver_capacities.keys()) - self.called_out_drivers - set(exclude)
         
-        if not drivers:
+        if not all_drivers:
             print(f"      ⚠️ No available drivers found")
             return None
         
-        for driver in drivers:
-            # Get driver's groups from ALL their dogs
-            driver_groups = []
-            driver_dogs = []
-            for d in self.current_state:
-                if d.get('driver') == driver:
-                    driver_groups.extend(d.get('groups', []))
-                    driver_dogs.append(d)
+        for driver in all_drivers:
+            # Get driver's current dogs and groups
+            driver_dogs = [d for d in self.current_state if d.get('driver') == driver]
             
-            if not driver_dogs:  # Driver has no dogs?
-                continue
+            # Build driver's groups from their current dogs
+            driver_groups = []
+            for d in driver_dogs:
+                driver_groups.extend(d.get('groups', []))
+            
+            # If driver has no dogs, check their capacity to infer possible groups
+            if not driver_groups:
+                capacity = self.driver_capacities.get(driver, {})
+                for i in [1, 2, 3]:
+                    if capacity.get(f'group{i}', 0) > 0:
+                        driver_groups.append(i)
             
             driver_groups = list(set(driver_groups))  # Unique groups
             
@@ -410,20 +413,25 @@ class SmartDogReassignment:
             if not self._can_driver_accept(driver, dog):
                 continue
             
-            # Find closest assignment in this driver's route (dogs OR fields with 1-mile limit)
+            # Find closest assignment in this driver's route
             min_distance = float('inf')
-            for other_assignment in driver_dogs:
-                if other_assignment['dog_id'] != dog['dog_id']:
-                    dist = self._get_distance(dog['dog_id'], other_assignment['dog_id'])
-                    
-                    # If it's a field, only consider if within 1 mile
-                    if other_assignment.get('num_dogs', 1) == 0:  # Field location
-                        if dist <= 1.0:  # 1-mile limit for fields
+            
+            if driver_dogs:  # Driver has dogs
+                for other_assignment in driver_dogs:
+                    if other_assignment['dog_id'] != dog['dog_id']:
+                        dist = self._get_distance(dog['dog_id'], other_assignment['dog_id'])
+                        
+                        # If it's a field, only consider if within 1 mile
+                        if other_assignment.get('num_dogs', 1) == 0:  # Field location
+                            if dist <= 1.0:  # 1-mile limit for fields
+                                if dist < min_distance:
+                                    min_distance = dist
+                        else:  # Regular dog
                             if dist < min_distance:
                                 min_distance = dist
-                    else:  # Regular dog
-                        if dist < min_distance:
-                            min_distance = dist
+            else:
+                # Driver has no dogs - give moderate priority
+                min_distance = 2.0
             
             # Score combines distance and group penalty
             score = min_distance * penalty
@@ -529,19 +537,27 @@ class SmartDogReassignment:
             
             # STEP 1: Look for lightly-loaded drivers within 1.5 miles
             nearby_light_drivers = []
-            drivers = set(d['driver'] for d in self.current_state if d['driver'])
             
-            for driver in drivers:
-                if driver in self.called_out_drivers:
-                    continue
+            # Use ALL drivers from capacity list, not just those with current assignments
+            all_drivers = set(self.driver_capacities.keys()) - self.called_out_drivers
+            
+            for driver in all_drivers:
+                # Get driver's current dogs and groups
+                driver_dogs = [d for d in self.current_state if d.get('driver') == driver]
                 
-                # Get driver's groups
+                # Build driver's groups from their current dogs
                 driver_groups = set()
-                for d in self.current_state:
-                    if d['driver'] == driver:
-                        driver_groups.update(d['groups'])
+                for d in driver_dogs:
+                    driver_groups.update(d.get('groups', []))
                 
-                # Check compatibility
+                # If driver has no dogs, check their capacity to infer possible groups
+                if not driver_groups:
+                    capacity = self.driver_capacities.get(driver, {})
+                    for i in [1, 2, 3]:
+                        if capacity.get(f'group{i}', 0) > 0:
+                            driver_groups.add(i)
+                
+                # Check compatibility with more flexible matching
                 compatible, penalty = self._groups_compatible(callout_dog['groups'], list(driver_groups))
                 if not compatible:
                     continue
@@ -555,10 +571,11 @@ class SmartDogReassignment:
                 if not self._can_driver_accept(driver, callout_dog):
                     continue
                 
-                # Find closest distance
+                # Find closest distance to driver's route
                 min_distance = float('inf')
-                for other_assignment in self.current_state:
-                    if other_assignment['driver'] == driver:
+                
+                if driver_dogs:  # Driver has dogs - calculate distance normally
+                    for other_assignment in driver_dogs:
                         dist = self._get_distance(callout_dog['dog_id'], other_assignment['dog_id'])
                         
                         # If it's a field location, only consider if within 1 mile
@@ -569,25 +586,35 @@ class SmartDogReassignment:
                         else:  # Regular dog
                             if dist < min_distance:
                                 min_distance = dist
+                else:
+                    # Driver has no dogs yet - check distance to callout dog's original location
+                    # Use a placeholder distance of 0 to prioritize empty drivers
+                    min_distance = 0.0
+                    print(f"      📍 {driver} has no dogs yet - treating as highly available")
                 
-                # Only consider if within light load radius
-                if min_distance <= self.LIGHT_LOAD_RADIUS:
+                # Only consider if within light load radius (or driver is empty)
+                if min_distance <= self.LIGHT_LOAD_RADIUS or not driver_dogs:
                     nearby_light_drivers.append({
                         'driver': driver,
                         'distance': min_distance,
                         'min_load': min_load,
                         'score': min_distance * penalty,
-                        'is_adjacent': penalty > 1
+                        'is_adjacent': penalty > 1,
+                        'is_empty': len(driver_dogs) == 0
                     })
             
                             # If we found lightly-loaded drivers within 1.5 miles, use the best one
             if nearby_light_drivers:
-                # Sort by distance (closest first)
-                nearby_light_drivers.sort(key=lambda x: x['distance'])
+                # Prioritize empty drivers first, then sort by distance
+                nearby_light_drivers.sort(key=lambda x: (not x.get('is_empty', False), x['distance']))
                 best_light = nearby_light_drivers[0]
                 
-                print(f"   ⭐ Found lightly-loaded driver within {self.LIGHT_LOAD_RADIUS} mi!")
-                print(f"   ✅ Assigning to {best_light['driver']} ({best_light['distance']:.2f} mi, load: {best_light['min_load']} dogs)")
+                if best_light.get('is_empty'):
+                    print(f"   ⭐ Found empty driver {best_light['driver']} with capacity!")
+                    print(f"   ✅ Assigning to {best_light['driver']} (empty driver, load: {best_light['min_load']} dogs)")
+                else:
+                    print(f"   ⭐ Found lightly-loaded driver within {self.LIGHT_LOAD_RADIUS} mi!")
+                    print(f"   ✅ Assigning to {best_light['driver']} ({best_light['distance']:.2f} mi, load: {best_light['min_load']} dogs)")
                 
                 callout_dog['driver'] = best_light['driver']
                 self.assignments_made.append({
@@ -604,15 +631,24 @@ class SmartDogReassignment:
             # STEP 2: Fall back to finding ALL potential drivers, sorted by distance
             all_options = []
             
-            for driver in drivers:
-                if driver in self.called_out_drivers:
-                    continue
+            # Use ALL drivers from capacity list
+            all_drivers = set(self.driver_capacities.keys()) - self.called_out_drivers
+            
+            for driver in all_drivers:
+                # Get driver's current dogs and groups
+                driver_dogs = [d for d in self.current_state if d.get('driver') == driver]
                 
-                # Get driver's groups
+                # Build driver's groups from their current dogs
                 driver_groups = set()
-                for d in self.current_state:
-                    if d['driver'] == driver:
-                        driver_groups.update(d['groups'])
+                for d in driver_dogs:
+                    driver_groups.update(d.get('groups', []))
+                
+                # If driver has no dogs, check their capacity to infer possible groups
+                if not driver_groups:
+                    capacity = self.driver_capacities.get(driver, {})
+                    for i in [1, 2, 3]:
+                        if capacity.get(f'group{i}', 0) > 0:
+                            driver_groups.add(i)
                 
                 # Check compatibility
                 compatible, penalty = self._groups_compatible(callout_dog['groups'], list(driver_groups))
@@ -623,8 +659,8 @@ class SmartDogReassignment:
                 min_distance = float('inf')
                 closest_is_field = False
                 
-                for other_assignment in self.current_state:
-                    if other_assignment['driver'] == driver:
+                if driver_dogs:  # Driver has dogs
+                    for other_assignment in driver_dogs:
                         dist = self._get_distance(callout_dog['dog_id'], other_assignment['dog_id'])
                         
                         # If it's a field location, only consider if within 1 mile
@@ -637,6 +673,10 @@ class SmartDogReassignment:
                             if dist < min_distance:
                                 min_distance = dist
                                 closest_is_field = False
+                else:
+                    # Driver has no dogs yet - give them a moderate distance to be considered
+                    # but not prioritized over drivers with actual nearby dogs
+                    min_distance = 2.0  # Default distance for empty drivers
                 
                 if min_distance < self.MAX_SEARCH_RADIUS:
                     has_capacity = self._can_driver_accept(driver, callout_dog)
@@ -646,7 +686,8 @@ class SmartDogReassignment:
                         'score': min_distance * penalty,
                         'has_capacity': has_capacity,
                         'is_adjacent': penalty > 1,
-                        'via_field': closest_is_field
+                        'via_field': closest_is_field,
+                        'is_empty': len(driver_dogs) == 0
                     })
             
             # Sort by score (distance * penalty)
@@ -769,6 +810,17 @@ class SmartDogReassignment:
                 print(f"   {quality}: {count} ⭐ (preferred - lightly loaded drivers)")
             else:
                 print(f"   {quality}: {count}")
+        
+        # Show distribution of assignments per driver
+        driver_assignment_counts = {}
+        for a in self.assignments_made:
+            if a['driver'] != 'UNASSIGNED':
+                driver_assignment_counts[a['driver']] = driver_assignment_counts.get(a['driver'], 0) + 1
+        
+        if driver_assignment_counts:
+            print(f"\n📈 Assignments per driver:")
+            for driver, count in sorted(driver_assignment_counts.items(), key=lambda x: x[1], reverse=True):
+                print(f"   {driver}: {count} callout{'s' if count > 1 else ''}")
         
         if self.cascading_moves:
             print(f"\n🔄 Cascading moves made:")
